@@ -3,12 +3,16 @@ package com.igino.remote_camera
 import android.Manifest
 import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.drawable.GradientDrawable
+import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.media.ExifInterface
 import android.net.Uri
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -16,20 +20,25 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.OptIn
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalLensFacing
@@ -48,6 +57,7 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
@@ -62,7 +72,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var remoteIpTextView: TextView
     private lateinit var statusTextView: TextView
     private lateinit var roleSwitch: SwitchCompat
-    private lateinit var scanButton: Button
+    private lateinit var scanButton: ImageButton
+    private lateinit var editPhotoButton: ImageButton
+    private lateinit var loadPhotoButton: ImageButton
     private lateinit var captureButton: ImageButton
     private lateinit var switchCameraButton: ImageButton
     private lateinit var closeButton: ImageButton
@@ -72,6 +84,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var focusControlLayout: View
     private lateinit var autofocusSwitch: SwitchCompat
     private lateinit var focusSeekBar: SeekBar
+
+    private lateinit var fullScreenDrawingContainer: View
+    private lateinit var drawingView: DrawingView
+    private lateinit var drawingColorIndicator: View
+    private lateinit var clearDrawingButton: Button
+    private lateinit var saveDrawingButton: Button
+    private lateinit var closeDrawingButton: ImageButton
+
+    private lateinit var slavePaletteContainer: View
+    private lateinit var colorPaletteLayout: LinearLayout
+    private lateinit var closePaletteButton: Button
 
     private var nsdManager: NsdManager? = null
     private var serviceName: String = "RemoteCamera-${Build.MODEL.replace(" ", "_")}"
@@ -98,6 +121,8 @@ class MainActivity : AppCompatActivity() {
     private val PREF_ROLE = "last_role"
 
     private var lastReceivedBitmap: Bitmap? = null
+    private var lastCapturedPhoto: Bitmap? = null
+    private var isDrawingMode = false
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -107,13 +132,65 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val pickImageLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val bitmap = decodeBitmapFromUri(uri)
+            if (bitmap != null) {
+                lastCapturedPhoto = bitmap
+                remoteImageView.setImageBitmap(bitmap)
+                remoteImageView.visibility = View.VISIBLE
+                Toast.makeText(this, "Foto caricata con successo", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Impossibile caricare l'immagine", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun decodeBitmapFromUri(uri: Uri): Bitmap? {
+        return try {
+            val inputStream = contentResolver.openInputStream(uri) ?: return null
+            val bitmap = BitmapFactory.decodeStream(inputStream)
+            inputStream.close()
+            if (bitmap == null) return null
+
+            val exifStream = contentResolver.openInputStream(uri)
+            val exif = exifStream?.use { ExifInterface(it) }
+            val orientation = exif?.getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            ) ?: ExifInterface.ORIENTATION_NORMAL
+
+            val rotationDegrees = when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270
+                else -> 0
+            }
+
+            if (rotationDegrees != 0) {
+                val matrix = Matrix()
+                matrix.postRotate(rotationDegrees.toFloat())
+                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                bitmap.recycle()
+                rotated
+            } else {
+                bitmap
+            }
+        } catch (e: Exception) {
+            Log.e("RemoteCamera", "Errore decodeBitmapFromUri: ${e.message}")
+            null
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
             enableEdgeToEdge()
             setContentView(R.layout.activity_main)
             
-            prefs = getSharedPreferences("remote_camera_prefs", Context.MODE_PRIVATE)
+            prefs = getSharedPreferences("remote_camera_prefs", MODE_PRIVATE)
 
             ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
                 val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -126,6 +203,8 @@ class MainActivity : AppCompatActivity() {
             statusTextView = findViewById(R.id.statusTextView)
             roleSwitch = findViewById(R.id.roleSwitch)
             scanButton = findViewById(R.id.scanButton)
+            editPhotoButton = findViewById(R.id.editPhotoButton)
+            loadPhotoButton = findViewById(R.id.loadPhotoButton)
             captureButton = findViewById(R.id.captureButton)
             switchCameraButton = findViewById(R.id.switchCameraButton)
             closeButton = findViewById(R.id.closeButton)
@@ -136,12 +215,25 @@ class MainActivity : AppCompatActivity() {
             autofocusSwitch = findViewById(R.id.autofocusSwitch)
             focusSeekBar = findViewById(R.id.focusSeekBar)
 
+            fullScreenDrawingContainer = findViewById(R.id.fullScreenDrawingContainer)
+            drawingView = findViewById(R.id.drawingView)
+            drawingColorIndicator = findViewById(R.id.drawingColorIndicator)
+            clearDrawingButton = findViewById(R.id.clearDrawingButton)
+            saveDrawingButton = findViewById(R.id.saveDrawingButton)
+            closeDrawingButton = findViewById(R.id.closeDrawingButton)
+
+            slavePaletteContainer = findViewById(R.id.slavePaletteContainer)
+            colorPaletteLayout = findViewById(R.id.colorPaletteLayout)
+            closePaletteButton = findViewById(R.id.closePaletteButton)
+
+            setupColorPalette()
+
             cameraExecutor = Executors.newSingleThreadExecutor()
 
             val localIp = getLocalIpAddress()
             localIpTextView.text = "Indirizzo Locale: $localIp"
 
-            nsdManager = getSystemService(Context.NSD_SERVICE) as? NsdManager
+            nsdManager = getSystemService(NSD_SERVICE) as? NsdManager
 
             val lastRoleIsSlave = prefs.getBoolean(PREF_ROLE, Build.MODEL.hashCode() % 2 == 0)
             roleSwitch.isChecked = lastRoleIsSlave
@@ -178,6 +270,42 @@ class MainActivity : AppCompatActivity() {
                 startManualScan()
             }
 
+            editPhotoButton.setOnClickListener {
+                if (lastCapturedPhoto == null) {
+                    Toast.makeText(this, "Nessuna foto disponibile da modificare", Toast.LENGTH_SHORT).show()
+                } else {
+                    startDrawingModeOnMaster()
+                    sendControlMessage("CMD_START_DRAWING")
+                }
+            }
+
+            loadPhotoButton.setOnClickListener {
+                pickImageLauncher.launch("image/*")
+            }
+
+            clearDrawingButton.setOnClickListener {
+                drawingView.clearDrawing()
+            }
+
+            saveDrawingButton.setOnClickListener {
+                val editedBitmap = drawingView.getCombinedBitmap()
+                if (editedBitmap != null) {
+                    saveImage(editedBitmap)
+                } else {
+                    Toast.makeText(this, "Errore salvataggio foto modificata", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            closeDrawingButton.setOnClickListener {
+                stopDrawingModeOnMaster()
+                sendControlMessage("CMD_STOP_DRAWING")
+            }
+
+            closePaletteButton.setOnClickListener {
+                stopDrawingModeOnSlave()
+                sendControlMessage("CMD_STOP_DRAWING")
+            }
+
             captureButton.setOnClickListener {
                 captureRemoteImage()
             }
@@ -199,6 +327,119 @@ class MainActivity : AppCompatActivity() {
 
         } catch (e: Exception) {
             Log.e("RemoteCamera", "Crash in onCreate", e)
+        }
+    }
+
+    private fun setupColorPalette() {
+        colorPaletteLayout.removeAllViews()
+
+        val colorList = listOf(
+            Pair(Color.RED, "Rosso"),
+            Pair(Color.GREEN, "Verde"),
+            Pair(Color.BLUE, "Blu"),
+            Pair(Color.YELLOW, "Giallo"),
+            Pair(Color.MAGENTA, "Magenta"),
+            Pair(Color.CYAN, "Ciano"),
+            Pair(Color.parseColor("#FFA500"), "Arancione"),
+            Pair(Color.parseColor("#800080"), "Viola"),
+            Pair(Color.WHITE, "Bianco"),
+            Pair(Color.BLACK, "Nero"),
+            Pair(Color.parseColor("#FF1493"), "Rosa"),
+            Pair(Color.parseColor("#8B4513"), "Marrone")
+        )
+
+        val density = resources.displayMetrics.density
+        val columns = 3
+        var currentRow: LinearLayout? = null
+
+        colorList.forEachIndexed { index, (color, name) ->
+            if (index % columns == 0) {
+                currentRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        setMargins(0, (12 * density).toInt(), 0, (12 * density).toInt())
+                    }
+                }
+                colorPaletteLayout.addView(currentRow)
+            }
+
+            val itemLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+
+                val circleView = View(this@MainActivity).apply {
+                    val size = (60 * density).toInt()
+                    layoutParams = LinearLayout.LayoutParams(size, size)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(color)
+                        setStroke((3 * density).toInt(), Color.WHITE)
+                    }
+                }
+
+                val textView = TextView(this@MainActivity).apply {
+                    text = name
+                    setTextColor(Color.WHITE)
+                    textSize = 14f
+                    gravity = Gravity.CENTER
+                    setPadding(0, (6 * density).toInt(), 0, 0)
+                }
+
+                addView(circleView)
+                addView(textView)
+
+                setOnClickListener {
+                    sendControlMessage("CMD_SET_DRAW_COLOR:$color")
+                    Toast.makeText(this@MainActivity, "Colore $name inviato al Master", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            currentRow?.addView(itemLayout)
+        }
+    }
+
+    private fun startDrawingModeOnMaster() {
+        isDrawingMode = true
+        val photo = lastCapturedPhoto ?: return
+        runOnUiThread {
+            fullScreenDrawingContainer.visibility = View.VISIBLE
+            drawingView.setPhoto(photo)
+            drawingView.setStrokeColor(Color.RED)
+            drawingColorIndicator.setBackgroundColor(Color.RED)
+        }
+    }
+
+    private fun stopDrawingModeOnMaster() {
+        isDrawingMode = false
+        runOnUiThread {
+            fullScreenDrawingContainer.visibility = View.GONE
+        }
+    }
+
+    private fun startDrawingModeOnSlave() {
+        isDrawingMode = true
+        stopCamera()
+        runOnUiThread {
+            slavePaletteContainer.visibility = View.VISIBLE
+        }
+    }
+
+    private fun stopDrawingModeOnSlave() {
+        isDrawingMode = false
+        runOnUiThread {
+            slavePaletteContainer.visibility = View.GONE
+            if (roleSwitch.isChecked) {
+                startCameraIfSlave()
+            }
         }
     }
 
@@ -226,13 +467,6 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     Toast.makeText(this, "Foto salvata ($filename)", Toast.LENGTH_SHORT).show()
                     statusTextView.text = "Foto salvata!"
-                    imageUri.let { uri ->
-                        val intent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(uri, "image/jpeg")
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        startActivity(intent)
-                    }
                 }
             }
         } catch (e: Exception) {
@@ -251,7 +485,7 @@ class MainActivity : AppCompatActivity() {
                         try {
                             val address = InetAddress.getByName(lastIp)
                             val socket = Socket()
-                            socket.connect(java.net.InetSocketAddress(address, FIXED_PORT), 2000)
+                            socket.connect(InetSocketAddress(address, FIXED_PORT), 2000)
                             handleConnection(socket, false)
                         } catch (e: Exception) {
                             Log.d("RemoteCamera", "Riconnessione fallita, riprovo tra 3s")
@@ -283,6 +517,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateRoleUI(isSlave: Boolean) {
         runOnUiThread {
+            stopDrawingModeOnMaster()
+            stopDrawingModeOnSlave()
             if (isSlave) {
                 statusTextView.text = "Modalità: SLAVE"
                 remoteImageView.visibility = View.GONE
@@ -290,6 +526,8 @@ class MainActivity : AppCompatActivity() {
                 lastReceivedBitmap = null
                 captureButton.visibility = View.GONE
                 focusControlLayout.visibility = View.GONE
+                editPhotoButton.visibility = View.GONE
+                loadPhotoButton.visibility = View.GONE
                 localPreviewView.visibility = View.VISIBLE
                 checkCameraPermission()
             } else {
@@ -297,6 +535,8 @@ class MainActivity : AppCompatActivity() {
                 remoteImageView.visibility = View.VISIBLE
                 captureButton.visibility = View.VISIBLE
                 focusControlLayout.visibility = View.VISIBLE
+                editPhotoButton.visibility = View.VISIBLE
+                loadPhotoButton.visibility = View.VISIBLE
                 localPreviewView.visibility = View.GONE
                 stopCamera()
             }
@@ -325,12 +565,12 @@ class MainActivity : AppCompatActivity() {
                     .build()
                 
                 imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                    if (roleSwitch.isChecked && activeSocket?.isConnected == true) {
+                    if (roleSwitch.isChecked && activeSocket?.isConnected == true && !isDrawingMode) {
                         try {
                             val bitmap = imageProxy.toBitmap()
                             val rotation = imageProxy.imageInfo.rotationDegrees
                             val outBitmap = if (rotation != 0) {
-                                val matrix = android.graphics.Matrix()
+                                val matrix = Matrix()
                                 matrix.postRotate(rotation.toFloat())
                                 Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
                             } else {
@@ -371,7 +611,7 @@ class MainActivity : AppCompatActivity() {
                     override fun onCaptureSuccess(image: ImageProxy) {
                         val bitmap = image.toBitmap()
                         val rotation = image.imageInfo.rotationDegrees
-                        val matrix = android.graphics.Matrix()
+                        val matrix = Matrix()
                         matrix.postRotate(rotation.toFloat())
                         val rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
                         val stream = ByteArrayOutputStream()
@@ -467,6 +707,7 @@ class MainActivity : AppCompatActivity() {
                     } else if (type == 3) {
                         if (!roleSwitch.isChecked) {
                             val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size)
+                            lastCapturedPhoto = bitmap
                             saveImage(bitmap)
                         }
                     }
@@ -478,6 +719,8 @@ class MainActivity : AppCompatActivity() {
                     remoteIpTextView.text = "Indirizzo Remoto: -"
                     remoteImageView.setImageBitmap(null)
                     lastReceivedBitmap = null
+                    stopDrawingModeOnMaster()
+                    stopDrawingModeOnSlave()
                     stopCamera()
                 }
             }
@@ -536,17 +779,47 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread { 
                 Toast.makeText(this, "Camera cambiata (ID: $info)", Toast.LENGTH_SHORT).show()
             }
+        } else if (message == "CMD_START_DRAWING") {
+            if (roleSwitch.isChecked) {
+                startDrawingModeOnSlave()
+            } else {
+                if (lastCapturedPhoto != null) {
+                    startDrawingModeOnMaster()
+                } else {
+                    sendControlMessage("CMD_NO_PHOTO")
+                    runOnUiThread {
+                        Toast.makeText(this, "Nessuna foto scattata disponibile", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        } else if (message == "CMD_STOP_DRAWING") {
+            if (roleSwitch.isChecked) {
+                stopDrawingModeOnSlave()
+            } else {
+                stopDrawingModeOnMaster()
+            }
+        } else if (message.startsWith("CMD_SET_DRAW_COLOR:")) {
+            val colorStr = message.substringAfter("CMD_SET_DRAW_COLOR:")
+            val colorInt = colorStr.toIntOrNull() ?: Color.RED
+            runOnUiThread {
+                drawingView.setStrokeColor(colorInt)
+                drawingColorIndicator.setBackgroundColor(colorInt)
+            }
+        } else if (message == "CMD_NO_PHOTO") {
+            runOnUiThread {
+                Toast.makeText(this, "Nessuna foto disponibile sul Master", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
-    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalLensFacing::class, androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    @OptIn(ExperimentalLensFacing::class, ExperimentalCamera2Interop::class)
     private fun sendCameraListToRemote() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             try {
                 val provider = cameraProviderFuture.get()
                 val cameraInfos = provider.availableCameraInfos
-                val manager = getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+                val manager = getSystemService(CAMERA_SERVICE) as CameraManager
                 val allIds = manager.cameraIdList
                 
                 val listString = cameraInfos.mapIndexed { index, info ->
@@ -562,7 +835,6 @@ class MainActivity : AppCompatActivity() {
                     "$facing|$id"
                 }.joinToString(";")
                 
-                // Se mancano ID del CameraManager, aggiungiamoli (aggressione)
                 val existingIds = cameraInfos.map { Camera2CameraInfo.from(it).cameraId }
                 val missingIds = allIds.filter { it !in existingIds }
                 
@@ -589,7 +861,7 @@ class MainActivity : AppCompatActivity() {
         val displayItems = itemsData.map { it.substringBefore("|") }.toTypedArray()
         val ids = itemsData.map { it.substringAfter("|") }
 
-        androidx.appcompat.app.AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("Scegli Telecamera Remota")
             .setItems(displayItems) { _, which ->
                 sendControlMessage("CMD_SET_CAMERA_ID:${ids[which]}")
@@ -598,7 +870,7 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    @OptIn(ExperimentalCamera2Interop::class)
     private fun switchCameraById(cameraId: String) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
@@ -616,17 +888,17 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalLensFacing::class, androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    @OptIn(ExperimentalLensFacing::class, ExperimentalCamera2Interop::class)
     private fun showCameraSelectionMenu() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             try {
                 val provider = cameraProviderFuture.get()
                 val cameraInfos = provider.availableCameraInfos
-                val manager = getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+                val manager = getSystemService(CAMERA_SERVICE) as CameraManager
                 val allIds = manager.cameraIdList
 
-                val itemsData = mutableListOf<Pair<String, String>>() // DisplayName to ID
+                val itemsData = mutableListOf<Pair<String, String>>()
                 
                 cameraInfos.forEach { info ->
                     val cam2Info = Camera2CameraInfo.from(info)
@@ -648,7 +920,7 @@ class MainActivity : AppCompatActivity() {
 
                 val displayItems = itemsData.map { it.first }.toTypedArray()
 
-                androidx.appcompat.app.AlertDialog.Builder(this)
+                AlertDialog.Builder(this)
                     .setTitle("Scegli Telecamera")
                     .setItems(displayItems) { _, which ->
                         switchCameraById(itemsData[which].second)
@@ -659,7 +931,7 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    @OptIn(ExperimentalCamera2Interop::class)
     private fun enableAutofocus(enable: Boolean) {
         val cam = camera ?: return
         val camera2CameraControl = Camera2CameraControl.from(cam.cameraControl)
@@ -672,15 +944,12 @@ class MainActivity : AppCompatActivity() {
         camera2CameraControl.captureRequestOptions = options.build()
     }
     
-    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    @OptIn(ExperimentalCamera2Interop::class)
     private fun setManualFocus(distance: Float) {
         val cam = camera ?: return
         val camera2CameraControl = Camera2CameraControl.from(cam.cameraControl)
         val options = CaptureRequestOptions.Builder()
-        // Disabilita AF per usare manual focus
         options.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-        
-        // Mappa 0.0..1.0 alla distanza focale (0.0 = infinito, valori più alti = più vicino)
         options.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, distance * 10f)
         camera2CameraControl.captureRequestOptions = options.build()
     }

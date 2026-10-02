@@ -139,31 +139,202 @@
         android:text="In attesa..."
         android:padding="16dp"
         android:gravity="center"
-        app:layout_constraintBottom_toTopOf="@id/captureButton"
+        app:layout_constraintBottom_toTopOf="@id/bottomActionsBar"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/focusControlLayout" />
 
-    <ImageButton
-        android:id="@+id/captureButton"
-        android:layout_width="70dp"
-        android:layout_height="70dp"
-        android:layout_marginBottom="20dp"
-        android:background="@android:drawable/ic_menu_camera"
-        android:backgroundTint="#FF0000"
-        android:visibility="gone"
-        app:layout_constraintBottom_toTopOf="@id/scanButton"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
-
-    <Button
-        android:id="@+id/scanButton"
+    <LinearLayout
+        android:id="@+id/bottomActionsBar"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:padding="8dp"
         android:layout_marginBottom="32dp"
-        android:text="Nuova Scansione"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent" />
+        app:layout_constraintStart_toStartOf="parent">
+
+        <!-- Nuova Scansione -->
+        <ImageButton
+            android:id="@+id/scanButton"
+            android:layout_width="54dp"
+            android:layout_height="54dp"
+            android:layout_marginEnd="12dp"
+            android:background="@drawable/circle_button_background"
+            android:src="@android:drawable/ic_menu_rotate"
+            android:scaleType="centerInside"
+            android:padding="12dp"
+            android:contentDescription="Nuova Scansione"
+            app:tint="#FFFFFF" />
+
+        <!-- Scatta Foto (Capture) -->
+        <ImageButton
+            android:id="@+id/captureButton"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:layout_marginEnd="12dp"
+            android:background="@drawable/circle_red_button_background"
+            android:src="@android:drawable/ic_menu_camera"
+            android:scaleType="centerInside"
+            android:padding="12dp"
+            android:contentDescription="Scatta Foto"
+            android:visibility="gone"
+            app:tint="#FFFFFF" />
+
+        <!-- Modifica Foto -->
+        <ImageButton
+            android:id="@+id/editPhotoButton"
+            android:layout_width="54dp"
+            android:layout_height="54dp"
+            android:layout_marginEnd="12dp"
+            android:background="@drawable/circle_button_background"
+            android:src="@android:drawable/ic_menu_edit"
+            android:scaleType="centerInside"
+            android:padding="12dp"
+            android:contentDescription="Modifica foto"
+            android:visibility="gone"
+            app:tint="#FFFFFF" />
+
+        <!-- Carica Foto -->
+        <ImageButton
+            android:id="@+id/loadPhotoButton"
+            android:layout_width="54dp"
+            android:layout_height="54dp"
+            android:background="@drawable/circle_button_background"
+            android:src="@android:drawable/ic_menu_gallery"
+            android:scaleType="centerInside"
+            android:padding="12dp"
+            android:contentDescription="Carica Foto"
+            android:visibility="gone"
+            app:tint="#FFFFFF" />
+    </LinearLayout>
+
+    <!-- Full Screen Color Palette Container (Slave View) -->
+    <FrameLayout
+        android:id="@+id/slavePaletteContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FF1E1E1E"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="true"
+        android:elevation="10dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="24dp"
+            android:gravity="center_horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Palette Colori"
+                android:textColor="#FFFFFF"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:layout_marginTop="32dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Seleziona un colore per disegnare sul Master"
+                android:textColor="#CCCCCC"
+                android:textSize="14sp"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="24dp" />
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1">
+
+                <LinearLayout
+                    android:id="@+id/colorPaletteLayout"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center_horizontal" />
+            </ScrollView>
+
+            <Button
+                android:id="@+id/closePaletteButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Chiudi Modifica"
+                android:textSize="16sp"
+                android:paddingHorizontal="32dp"
+                android:paddingVertical="12dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="24dp" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- Full Screen Drawing Container (Master View) -->
+    <FrameLayout
+        android:id="@+id/fullScreenDrawingContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FF000000"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="true"
+        android:elevation="10dp">
+
+        <com.igino.remote_camera.DrawingView
+            android:id="@+id/drawingView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="12dp"
+            android:background="#80000000"
+            android:gravity="center_vertical">
+
+            <View
+                android:id="@+id/drawingColorIndicator"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:background="#FF0000"
+                android:layout_marginEnd="8dp" />
+
+            <TextView
+                android:id="@+id/drawingStatusText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Disegna con il dito"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/clearDrawingButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Cancella"
+                android:layout_marginEnd="6dp" />
+
+            <Button
+                android:id="@+id/saveDrawingButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Salva"
+                android:layout_marginEnd="6dp" />
+
+            <ImageButton
+                android:id="@+id/closeDrawingButton"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                app:tint="#FFFFFF" />
+        </LinearLayout>
+    </FrameLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

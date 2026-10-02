@@ -95,6 +95,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var slavePaletteContainer: View
     private lateinit var colorPaletteLayout: LinearLayout
     private lateinit var closePaletteButton: Button
+    private lateinit var brushSizeSeekBar: SeekBar
+    private lateinit var brushSizeValueTextView: TextView
+    private lateinit var brushSizePreviewView: View
 
     private var nsdManager: NsdManager? = null
     private var serviceName: String = "RemoteCamera-${Build.MODEL.replace(" ", "_")}"
@@ -225,6 +228,22 @@ class MainActivity : AppCompatActivity() {
             slavePaletteContainer = findViewById(R.id.slavePaletteContainer)
             colorPaletteLayout = findViewById(R.id.colorPaletteLayout)
             closePaletteButton = findViewById(R.id.closePaletteButton)
+            brushSizeSeekBar = findViewById(R.id.brushSizeSeekBar)
+            brushSizeValueTextView = findViewById(R.id.brushSizeValueTextView)
+            brushSizePreviewView = findViewById(R.id.brushSizePreviewView)
+
+            brushSizeSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val size = progress.coerceAtLeast(2)
+                    brushSizeValueTextView.text = "$size px"
+                    updateBrushPreview(size)
+                    if (fromUser) {
+                        sendControlMessage("CMD_SET_DRAW_SIZE:$size")
+                    }
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
 
             setupColorPalette()
 
@@ -328,6 +347,15 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e("RemoteCamera", "Crash in onCreate", e)
         }
+    }
+
+    private fun updateBrushPreview(sizePx: Int) {
+        val density = resources.displayMetrics.density
+        val displaySize = (sizePx * density).toInt().coerceIn((6 * density).toInt(), (48 * density).toInt())
+        val params = brushSizePreviewView.layoutParams
+        params.width = displaySize
+        params.height = displaySize
+        brushSizePreviewView.layoutParams = params
     }
 
     private fun setupColorPalette() {
@@ -804,6 +832,12 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 drawingView.setStrokeColor(colorInt)
                 drawingColorIndicator.setBackgroundColor(colorInt)
+            }
+        } else if (message.startsWith("CMD_SET_DRAW_SIZE:")) {
+            val sizeStr = message.substringAfter("CMD_SET_DRAW_SIZE:")
+            val sizeFloat = sizeStr.toFloatOrNull() ?: 12f
+            runOnUiThread {
+                drawingView.setStrokeWidth(sizeFloat)
             }
         } else if (message == "CMD_NO_PHOTO") {
             runOnUiThread {

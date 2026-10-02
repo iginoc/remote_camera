@@ -211,7 +211,7 @@
             app:tint="#FFFFFF" />
     </LinearLayout>
 
-    <!-- Full Screen Color Palette Container (Slave View) -->
+    <!-- Full Screen Color & Tool Palette Container (Slave View) -->
     <FrameLayout
         android:id="@+id/slavePaletteContainer"
         android:layout_width="match_parent"
@@ -226,26 +226,26 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:orientation="vertical"
-            android:padding="24dp"
+            android:padding="20dp"
             android:gravity="center_horizontal">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Palette Colori"
+                android:text="Strumenti &amp; Colori Disegno"
                 android:textColor="#FFFFFF"
                 android:textSize="22sp"
                 android:textStyle="bold"
-                android:layout_marginTop="32dp" />
+                android:layout_marginTop="24dp" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Seleziona un colore per disegnare sul Master"
+                android:text="Seleziona colore e strumenti per disegnare sul Master"
                 android:textColor="#CCCCCC"
-                android:textSize="14sp"
-                android:layout_marginTop="8dp"
-                android:layout_marginBottom="24dp" />
+                android:textSize="13sp"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="16dp" />
 
             <ScrollView
                 android:layout_width="match_parent"
@@ -253,11 +253,94 @@
                 android:layout_weight="1">
 
                 <LinearLayout
-                    android:id="@+id/colorPaletteLayout"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:gravity="center_horizontal" />
+                    android:orientation="vertical">
+
+                    <!-- SEZIONE PALETTE STRUMENTI -->
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Palette Strumenti"
+                        android:textColor="#2196F3"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:background="#2A2A2A"
+                        android:padding="16dp"
+                        android:layout_marginBottom="20dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="Dimensione Pennello"
+                                android:textColor="#FFFFFF"
+                                android:textSize="14sp" />
+
+                            <TextView
+                                android:id="@+id/brushSizeValueTextView"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="12 px"
+                                android:textColor="#2196F3"
+                                android:textSize="14sp"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginTop="12dp">
+
+                            <View
+                                android:id="@+id/brushSizePreviewView"
+                                android:layout_width="24dp"
+                                android:layout_height="24dp"
+                                android:background="@drawable/circle_button_background"
+                                android:layout_marginEnd="12dp" />
+
+                            <SeekBar
+                                android:id="@+id/brushSizeSeekBar"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:min="2"
+                                android:max="80"
+                                android:progress="12" />
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <!-- SEZIONE PALETTE COLORI -->
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Palette Colori"
+                        android:textColor="#2196F3"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp" />
+
+                    <LinearLayout
+                        android:id="@+id/colorPaletteLayout"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:gravity="center_horizontal" />
+                </LinearLayout>
             </ScrollView>
 
             <Button
@@ -268,8 +351,8 @@
                 android:textSize="16sp"
                 android:paddingHorizontal="32dp"
                 android:paddingVertical="12dp"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="24dp" />
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="16dp" />
         </LinearLayout>
     </FrameLayout>
 

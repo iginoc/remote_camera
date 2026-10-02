@@ -28,9 +28,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalLensFacing
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -62,6 +64,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var roleSwitch: SwitchCompat
     private lateinit var scanButton: Button
     private lateinit var captureButton: ImageButton
+    private lateinit var switchCameraButton: ImageButton
     private lateinit var closeButton: ImageButton
     private lateinit var remoteImageView: ImageView
     private lateinit var localPreviewView: PreviewView
@@ -88,6 +91,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
+    private var currentCameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
     private lateinit var prefs: SharedPreferences
     private val PREF_LAST_IP = "last_remote_ip"
@@ -123,6 +127,7 @@ class MainActivity : AppCompatActivity() {
             roleSwitch = findViewById(R.id.roleSwitch)
             scanButton = findViewById(R.id.scanButton)
             captureButton = findViewById(R.id.captureButton)
+            switchCameraButton = findViewById(R.id.switchCameraButton)
             closeButton = findViewById(R.id.closeButton)
             remoteImageView = findViewById(R.id.remoteImageView)
             localPreviewView = findViewById(R.id.localPreviewView)
@@ -175,6 +180,14 @@ class MainActivity : AppCompatActivity() {
 
             captureButton.setOnClickListener {
                 captureRemoteImage()
+            }
+
+            switchCameraButton.setOnClickListener {
+                if (roleSwitch.isChecked) {
+                    showCameraSelectionMenu()
+                } else {
+                    sendControlMessage("CMD_GET_CAMERA_LIST")
+                }
             }
 
             closeButton.setOnClickListener {
@@ -335,7 +348,7 @@ class MainActivity : AppCompatActivity() {
                     imageProxy.close()
                 }
                 cameraProvider?.unbindAll()
-                camera = cameraProvider?.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageAnalysis)
+                camera = cameraProvider?.bindToLifecycle(this, currentCameraSelector, preview, imageAnalysis)
                 // Default AF ON
                 enableAutofocus(true)
             } catch (e: Exception) {
@@ -353,7 +366,7 @@ class MainActivity : AppCompatActivity() {
                 val imageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
-                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, imageCapture)
+                provider.bindToLifecycle(this, currentCameraSelector, imageCapture)
                 imageCapture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
                     override fun onCaptureSuccess(image: ImageProxy) {
                         val bitmap = image.toBitmap()
@@ -510,9 +523,142 @@ class MainActivity : AppCompatActivity() {
         } else if (message.startsWith("CMD_FOCUS_SET:")) {
             val value = message.substringAfter("CMD_FOCUS_SET:").toFloatOrNull() ?: 0f
             setManualFocus(value / 100f)
+        } else if (message == "CMD_GET_CAMERA_LIST") {
+            sendCameraListToRemote()
+        } else if (message.startsWith("CMD_CAMERA_LIST:")) {
+            val listString = message.substringAfter("CMD_CAMERA_LIST:")
+            runOnUiThread { showRemoteCameraSelectionMenu(listString) }
+        } else if (message.startsWith("CMD_SET_CAMERA_ID:")) {
+            val cameraId = message.substringAfter("CMD_SET_CAMERA_ID:")
+            runOnUiThread { switchCameraById(cameraId) }
+        } else if (message.startsWith("CMD_CAMERA_CHANGED:")) {
+            val info = message.substringAfter("CMD_CAMERA_CHANGED:")
+            runOnUiThread { 
+                Toast.makeText(this, "Camera cambiata (ID: $info)", Toast.LENGTH_SHORT).show()
+            }
         }
     }
-    
+
+    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalLensFacing::class, androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun sendCameraListToRemote() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        cameraProviderFuture.addListener({
+            try {
+                val provider = cameraProviderFuture.get()
+                val cameraInfos = provider.availableCameraInfos
+                val manager = getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+                val allIds = manager.cameraIdList
+                
+                val listString = cameraInfos.mapIndexed { index, info ->
+                    val cam2Info = Camera2CameraInfo.from(info)
+                    val id = cam2Info.cameraId
+                    val facingInt = info.lensFacing
+                    val facing = when (facingInt) {
+                        CameraSelector.LENS_FACING_BACK -> "Posteriore"
+                        CameraSelector.LENS_FACING_FRONT -> "Anteriore"
+                        CameraSelector.LENS_FACING_EXTERNAL -> "Esterna (USB)"
+                        else -> "Camera $id (Tipo $facingInt)"
+                    }
+                    "$facing|$id"
+                }.joinToString(";")
+                
+                // Se mancano ID del CameraManager, aggiungiamoli (aggressione)
+                val existingIds = cameraInfos.map { Camera2CameraInfo.from(it).cameraId }
+                val missingIds = allIds.filter { it !in existingIds }
+                
+                val missingString = missingIds.map { id ->
+                    "Sconosciuta (Forzata)|$id"
+                }.joinToString(";")
+                
+                val fullList = if (missingString.isEmpty()) listString else "$listString;$missingString"
+                
+                sendControlMessage("CMD_CAMERA_LIST:${if (fullList.isEmpty()) "Nessuna camera" else fullList}")
+                Log.d("RemoteCamera", "Full list sent: $fullList")
+            } catch (e: Exception) {
+                sendControlMessage("CMD_CAMERA_LIST:Errore")
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun showRemoteCameraSelectionMenu(listString: String) {
+        if (listString == "Nessuna camera" || listString == "Errore") {
+            Toast.makeText(this, "Nessuna camera trovata", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val itemsData = listString.split(";")
+        val displayItems = itemsData.map { it.substringBefore("|") }.toTypedArray()
+        val ids = itemsData.map { it.substringAfter("|") }
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Scegli Telecamera Remota")
+            .setItems(displayItems) { _, which ->
+                sendControlMessage("CMD_SET_CAMERA_ID:${ids[which]}")
+            }
+            .setNeutralButton("Aggiorna") { _, _ -> sendControlMessage("CMD_GET_CAMERA_LIST") }
+            .show()
+    }
+
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun switchCameraById(cameraId: String) {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        cameraProviderFuture.addListener({
+            try {
+                val provider = cameraProviderFuture.get()
+                currentCameraSelector = CameraSelector.Builder()
+                    .addCameraFilter { infos ->
+                        infos.filter { Camera2CameraInfo.from(it).cameraId == cameraId }
+                    }.build()
+                startCameraIfSlave()
+                sendControlMessage("CMD_CAMERA_CHANGED:$cameraId")
+            } catch (e: Exception) {
+                Log.e("RemoteCamera", "Errore switch ID", e)
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalLensFacing::class, androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun showCameraSelectionMenu() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        cameraProviderFuture.addListener({
+            try {
+                val provider = cameraProviderFuture.get()
+                val cameraInfos = provider.availableCameraInfos
+                val manager = getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+                val allIds = manager.cameraIdList
+
+                val itemsData = mutableListOf<Pair<String, String>>() // DisplayName to ID
+                
+                cameraInfos.forEach { info ->
+                    val cam2Info = Camera2CameraInfo.from(info)
+                    val id = cam2Info.cameraId
+                    val facingInt = info.lensFacing
+                    val name = when (facingInt) {
+                        CameraSelector.LENS_FACING_BACK -> "Posteriore"
+                        CameraSelector.LENS_FACING_FRONT -> "Anteriore"
+                        CameraSelector.LENS_FACING_EXTERNAL -> "Esterna (USB)"
+                        else -> "Camera $id (Tipo $facingInt)"
+                    }
+                    itemsData.add(name to id)
+                }
+                
+                val existingIds = itemsData.map { it.second }
+                allIds.filter { it !in existingIds }.forEach { id ->
+                    itemsData.add("Sconosciuta (Forzata) $id" to id)
+                }
+
+                val displayItems = itemsData.map { it.first }.toTypedArray()
+
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Scegli Telecamera")
+                    .setItems(displayItems) { _, which ->
+                        switchCameraById(itemsData[which].second)
+                    }
+                    .setNeutralButton("Aggiorna") { _, _ -> showCameraSelectionMenu() }
+                    .show()
+            } catch (e: Exception) {}
+        }, ContextCompat.getMainExecutor(this))
+    }
+
     @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
     private fun enableAutofocus(enable: Boolean) {
         val cam = camera ?: return

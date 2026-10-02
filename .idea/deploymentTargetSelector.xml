@@ -13,7 +13,7 @@
             </Target>
             <Target type="DEFAULT_BOOT">
               <handle>
-                <DeviceId pluginId="PhysicalDevice" identifier="serial=R58M62ZHTTX" />
+                <DeviceId pluginId="PhysicalDevice" identifier="serial=HPV39CVH" />
               </handle>
             </Target>
           </targets>

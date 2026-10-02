@@ -30,6 +30,16 @@
             android:layout_height="wrap_content" />
 
         <ImageButton
+            android:id="@+id/switchCameraButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="16dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:scaleType="centerInside"
+            android:src="@android:drawable/ic_menu_camera"
+            app:tint="#0000FF" />
+
+        <ImageButton
             android:id="@+id/closeButton"
             android:layout_width="40dp"
             android:layout_height="40dp"

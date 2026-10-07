@@ -23,12 +23,14 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
@@ -46,10 +48,10 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.io.ByteArrayOutputStream
@@ -71,16 +73,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var localIpTextView: TextView
     private lateinit var remoteIpTextView: TextView
     private lateinit var statusTextView: TextView
-    private lateinit var roleSwitch: SwitchCompat
+    private lateinit var roleLabel: TextView
+    private lateinit var becomeMasterButton: Button
     private lateinit var scanButton: ImageButton
     private lateinit var editPhotoButton: ImageButton
     private lateinit var loadPhotoButton: ImageButton
     private lateinit var captureButton: ImageButton
     private lateinit var switchCameraButton: ImageButton
     private lateinit var closeButton: ImageButton
+    private lateinit var cameraContainer: FrameLayout
     private lateinit var remoteImageView: ImageView
     private lateinit var localPreviewView: PreviewView
-    
+    private lateinit var bottomActionsBar: LinearLayout
+
     private lateinit var focusControlLayout: View
     private lateinit var autofocusSwitch: SwitchCompat
     private lateinit var focusSeekBar: SeekBar
@@ -95,9 +100,65 @@ class MainActivity : AppCompatActivity() {
     private lateinit var slavePaletteContainer: View
     private lateinit var colorPaletteLayout: LinearLayout
     private lateinit var closePaletteButton: Button
+    private lateinit var backToDrawingButton: Button
     private lateinit var brushSizeSeekBar: SeekBar
     private lateinit var brushSizeValueTextView: TextView
     private lateinit var brushSizePreviewView: View
+
+    private lateinit var customShadePreview: View
+    private lateinit var customShadeNameTextView: TextView
+    private lateinit var customShadeHexTextView: TextView
+    private lateinit var applyCustomShadeButton: Button
+    private lateinit var hueSliderView: ColorSliderView
+    private lateinit var shadeSliderView: ColorSliderView
+    private lateinit var saturationSliderView: ColorSliderView
+    private lateinit var generatedShadesContainer: LinearLayout
+    private lateinit var colorHarmoniesContainer: LinearLayout
+
+    private lateinit var paletteBadgeTextView: TextView
+    private lateinit var paletteBadgeDescTextView: TextView
+    private lateinit var paletteTabsLayout: LinearLayout
+    private lateinit var tabPalette1Button: Button
+    private lateinit var tabPalette2Button: Button
+    private lateinit var tabPalette3Button: Button
+
+    private lateinit var paletteToolsContainer: LinearLayout
+    private lateinit var paletteColorsContainer: LinearLayout
+    private lateinit var paletteShadesContainer: LinearLayout
+
+    private var isEditingLocally = false
+    private var assignedPaletteIds: Set<Int> = setOf(1, 2, 3)
+
+    private var currentHue: Float = 0f
+    private var currentLightness: Float = 0.5f
+    private var currentSaturation: Float = 1.0f
+    private var currentCustomColor: Int = Color.RED
+
+    private var isMaster = false
+    private var isCameraBoxVisible = false
+    @Volatile
+    private var isStreamingRequested = true
+
+    // Gestione multi-dispositivo (un solo master, molteplici slave)
+    data class PeerConnection(
+        val socket: Socket,
+        val outputStream: DataOutputStream,
+        val remoteIp: String,
+        var role: String = "SLAVE",
+        var deviceName: String = ""
+    ) {
+        @Volatile
+        var isAlive: Boolean = true
+    }
+
+    private val connectedPeers = Collections.synchronizedMap(mutableMapOf<String, PeerConnection>())
+
+    private val networkExecutor = Executors.newCachedThreadPool()
+    private lateinit var cameraExecutor: ExecutorService
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var camera: Camera? = null
+    private var activeImageCapture: ImageCapture? = null
+    private var currentCameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
     private var nsdManager: NsdManager? = null
     private var serviceName: String = "RemoteCamera-${Build.MODEL.replace(" ", "_")}"
@@ -105,33 +166,22 @@ class MainActivity : AppCompatActivity() {
     private val FIXED_PORT = 9000
     private var localPort: Int = -1
     private var serverSocket: ServerSocket? = null
-    
-    private var activeSocket: Socket? = null
-    private var dataOutputStream: DataOutputStream? = null
-    private var isUpdatingFromRemote = false
-    private var isReconnecting = true
-
     private var registrationListener: NsdManager.RegistrationListener? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
-
-    private lateinit var cameraExecutor: ExecutorService
-    private var cameraProvider: ProcessCameraProvider? = null
-    private var camera: Camera? = null
-    private var currentCameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+    private var isReconnecting = true
 
     private lateinit var prefs: SharedPreferences
-    private val PREF_LAST_IP = "last_remote_ip"
-    private val PREF_ROLE = "last_role"
+    private val PREF_IS_MASTER = "is_master"
+    private val PREF_KNOWN_IPS = "known_peer_ips"
 
     private var lastReceivedBitmap: Bitmap? = null
     private var lastCapturedPhoto: Bitmap? = null
-    private var isDrawingMode = false
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
-        if (isGranted) {
-            startCameraIfSlave()
+        if (isGranted && isMaster) {
+            startCameraOnMaster()
         }
     }
 
@@ -144,6 +194,7 @@ class MainActivity : AppCompatActivity() {
                 lastCapturedPhoto = bitmap
                 remoteImageView.setImageBitmap(bitmap)
                 remoteImageView.visibility = View.VISIBLE
+                editPhotoButton.visibility = View.VISIBLE
                 Toast.makeText(this, "Foto caricata con successo", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "Impossibile caricare l'immagine", Toast.LENGTH_SHORT).show()
@@ -192,7 +243,7 @@ class MainActivity : AppCompatActivity() {
         try {
             enableEdgeToEdge()
             setContentView(R.layout.activity_main)
-            
+
             prefs = getSharedPreferences("remote_camera_prefs", MODE_PRIVATE)
 
             ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
@@ -204,16 +255,19 @@ class MainActivity : AppCompatActivity() {
             localIpTextView = findViewById(R.id.localIpTextView)
             remoteIpTextView = findViewById(R.id.remoteIpTextView)
             statusTextView = findViewById(R.id.statusTextView)
-            roleSwitch = findViewById(R.id.roleSwitch)
+            roleLabel = findViewById(R.id.roleLabel)
+            becomeMasterButton = findViewById(R.id.becomeMasterButton)
             scanButton = findViewById(R.id.scanButton)
             editPhotoButton = findViewById(R.id.editPhotoButton)
             loadPhotoButton = findViewById(R.id.loadPhotoButton)
             captureButton = findViewById(R.id.captureButton)
             switchCameraButton = findViewById(R.id.switchCameraButton)
             closeButton = findViewById(R.id.closeButton)
+            cameraContainer = findViewById(R.id.cameraContainer)
             remoteImageView = findViewById(R.id.remoteImageView)
             localPreviewView = findViewById(R.id.localPreviewView)
-            
+            bottomActionsBar = findViewById(R.id.bottomActionsBar)
+
             focusControlLayout = findViewById(R.id.focusControlLayout)
             autofocusSwitch = findViewById(R.id.autofocusSwitch)
             focusSeekBar = findViewById(R.id.focusSeekBar)
@@ -228,24 +282,54 @@ class MainActivity : AppCompatActivity() {
             slavePaletteContainer = findViewById(R.id.slavePaletteContainer)
             colorPaletteLayout = findViewById(R.id.colorPaletteLayout)
             closePaletteButton = findViewById(R.id.closePaletteButton)
+            backToDrawingButton = findViewById(R.id.backToDrawingButton)
             brushSizeSeekBar = findViewById(R.id.brushSizeSeekBar)
             brushSizeValueTextView = findViewById(R.id.brushSizeValueTextView)
             brushSizePreviewView = findViewById(R.id.brushSizePreviewView)
+
+            customShadePreview = findViewById(R.id.customShadePreview)
+            customShadeNameTextView = findViewById(R.id.customShadeNameTextView)
+            customShadeHexTextView = findViewById(R.id.customShadeHexTextView)
+            applyCustomShadeButton = findViewById(R.id.applyCustomShadeButton)
+            hueSliderView = findViewById(R.id.hueSliderView)
+            shadeSliderView = findViewById(R.id.shadeSliderView)
+            saturationSliderView = findViewById(R.id.saturationSliderView)
+            generatedShadesContainer = findViewById(R.id.generatedShadesContainer)
+            colorHarmoniesContainer = findViewById(R.id.colorHarmoniesContainer)
 
             brushSizeSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     val size = progress.coerceAtLeast(2)
                     brushSizeValueTextView.text = "$size px"
                     updateBrushPreview(size)
+                    drawingView.setStrokeWidth(size.toFloat())
                     if (fromUser) {
-                        sendControlMessage("CMD_SET_DRAW_SIZE:$size")
+                        broadcastControlMessage("CMD_SET_DRAW_SIZE:$size")
                     }
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {}
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {}
             })
 
+            paletteBadgeTextView = findViewById(R.id.paletteBadgeTextView)
+            paletteBadgeDescTextView = findViewById(R.id.paletteBadgeDescTextView)
+            paletteTabsLayout = findViewById(R.id.paletteTabsLayout)
+            tabPalette1Button = findViewById(R.id.tabPalette1Button)
+            tabPalette2Button = findViewById(R.id.tabPalette2Button)
+            tabPalette3Button = findViewById(R.id.tabPalette3Button)
+
+            paletteToolsContainer = findViewById(R.id.paletteToolsContainer)
+            paletteColorsContainer = findViewById(R.id.paletteColorsContainer)
+            paletteShadesContainer = findViewById(R.id.paletteShadesContainer)
+
+            tabPalette1Button.setOnClickListener { onUserSelectedPaletteTab(1) }
+            tabPalette2Button.setOnClickListener { onUserSelectedPaletteTab(2) }
+            tabPalette3Button.setOnClickListener { onUserSelectedPaletteTab(3) }
+
             setupColorPalette()
+            setupCustomShadePalette()
+
+            applyPaletteVisibility(setOf(1, 2, 3))
 
             cameraExecutor = Executors.newSingleThreadExecutor()
 
@@ -254,31 +338,53 @@ class MainActivity : AppCompatActivity() {
 
             nsdManager = getSystemService(NSD_SERVICE) as? NsdManager
 
-            val lastRoleIsSlave = prefs.getBoolean(PREF_ROLE, Build.MODEL.hashCode() % 2 == 0)
-            roleSwitch.isChecked = lastRoleIsSlave
-            updateRoleUI(lastRoleIsSlave)
+            // All'avvio tutti i dispositivi partono come Slave (non master)
+            isMaster = false
+            updateRoleUI()
+            updateConnectionStatusUI()
 
-            roleSwitch.setOnCheckedChangeListener { _, isChecked ->
-                if (!isUpdatingFromRemote) {
-                    prefs.edit().putBoolean(PREF_ROLE, isChecked).apply()
-                    sendControlMessage(if (isChecked) "CMD_SET_ROLE:MASTER" else "CMD_SET_ROLE:SLAVE")
-                }
-                updateRoleUI(isChecked)
+            // Premendo "Diventa Master", attivo la mia fotocamera e la mostro agli slave
+            becomeMasterButton.setOnClickListener {
+                setMasterRole(true, broadcast = true)
+                Toast.makeText(this, "Questo dispositivo è ora MASTER (fotocamera attiva)", Toast.LENGTH_SHORT).show()
             }
-            
+
+            // Pulsante fotocamera:
+            // Sugli slave: all'avvio verde e riquadro nascosto. Se premuto diventa rosso e mostra il riquadro.
+            // Sul master: permette di cambiare la lente della fotocamera locale
+            switchCameraButton.setOnClickListener {
+                if (isMaster) {
+                    showCameraSelectionMenu()
+                } else {
+                    isCameraBoxVisible = !isCameraBoxVisible
+                    updateCameraBoxUI()
+                }
+            }
+
+            // Pressione prolungata sul pulsante fotocamera:
+            // Sugli slave: permette di richiedere il cambio fotocamera al master
+            switchCameraButton.setOnLongClickListener {
+                if (isMaster) {
+                    showCameraSelectionMenu()
+                } else {
+                    sendControlMessageToMaster("CMD_GET_CAMERA_LIST")
+                }
+                true
+            }
+
             autofocusSwitch.setOnCheckedChangeListener { _, isChecked ->
                 focusSeekBar.visibility = if (isChecked) View.GONE else View.VISIBLE
                 if (isChecked) {
-                    sendControlMessage("CMD_AF_ON")
+                    sendControlMessageToMaster("CMD_AF_ON")
                 } else {
-                    sendControlMessage("CMD_AF_OFF")
+                    sendControlMessageToMaster("CMD_AF_OFF")
                 }
             }
-            
+
             focusSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) {
-                        sendControlMessage("CMD_FOCUS_SET:$progress")
+                        sendControlMessageToMaster("CMD_FOCUS_SET:$progress")
                     }
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -289,12 +395,24 @@ class MainActivity : AppCompatActivity() {
                 startManualScan()
             }
 
+            drawingColorIndicator.setOnClickListener {
+                slavePaletteContainer.bringToFront()
+                slavePaletteContainer.visibility = View.VISIBLE
+                backToDrawingButton.visibility = View.VISIBLE
+                applyPaletteVisibility(setOf(1, 2, 3))
+            }
+
+            backToDrawingButton.setOnClickListener {
+                slavePaletteContainer.visibility = View.GONE
+            }
+
             editPhotoButton.setOnClickListener {
                 if (lastCapturedPhoto == null) {
                     Toast.makeText(this, "Nessuna foto disponibile da modificare", Toast.LENGTH_SHORT).show()
                 } else {
-                    startDrawingModeOnMaster()
-                    sendControlMessage("CMD_START_DRAWING")
+                    isEditingLocally = true
+                    startDrawingMode()
+                    distributePalettesToPeers()
                 }
             }
 
@@ -316,36 +434,163 @@ class MainActivity : AppCompatActivity() {
             }
 
             closeDrawingButton.setOnClickListener {
-                stopDrawingModeOnMaster()
-                sendControlMessage("CMD_STOP_DRAWING")
+                isEditingLocally = false
+                stopDrawingMode()
+                broadcastControlMessage("CMD_STOP_DRAWING")
             }
 
             closePaletteButton.setOnClickListener {
-                stopDrawingModeOnSlave()
-                sendControlMessage("CMD_STOP_DRAWING")
+                if (fullScreenDrawingContainer.visibility == View.VISIBLE) {
+                    slavePaletteContainer.visibility = View.GONE
+                } else {
+                    isEditingLocally = false
+                    stopDrawingMode()
+                    broadcastControlMessage("CMD_STOP_DRAWING")
+                }
             }
 
             captureButton.setOnClickListener {
                 captureRemoteImage()
             }
 
-            switchCameraButton.setOnClickListener {
-                if (roleSwitch.isChecked) {
-                    showCameraSelectionMenu()
-                } else {
-                    sendControlMessage("CMD_GET_CAMERA_LIST")
-                }
+            closeButton.setOnClickListener {
+                cleanupAndExit(broadcast = true)
             }
 
-            closeButton.setOnClickListener {
-                cleanupAndExit()
-            }
+            onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (slavePaletteContainer.visibility == View.VISIBLE && fullScreenDrawingContainer.visibility == View.VISIBLE) {
+                        slavePaletteContainer.visibility = View.GONE
+                    } else if (fullScreenDrawingContainer.visibility == View.VISIBLE || slavePaletteContainer.visibility == View.VISIBLE) {
+                        isEditingLocally = false
+                        stopDrawingMode()
+                        broadcastControlMessage("CMD_STOP_DRAWING")
+                    } else {
+                        cleanupAndExit(broadcast = true)
+                    }
+                }
+            })
 
             startServer()
             startAutoReconnectionLoop()
 
         } catch (e: Exception) {
             Log.e("RemoteCamera", "Crash in onCreate", e)
+        }
+    }
+
+    private fun setMasterRole(newMaster: Boolean, broadcast: Boolean = true) {
+        if (isMaster == newMaster) return
+        isMaster = newMaster
+        prefs.edit().putBoolean(PREF_IS_MASTER, isMaster).apply()
+
+        runOnUiThread {
+            updateRoleUI()
+            updateConnectionStatusUI()
+        }
+
+        if (isMaster) {
+            // Master: attivo la fotocamera locale per trasmetterla agli slave
+            checkCameraPermission()
+            if (broadcast) {
+                broadcastControlMessage("CMD_CLAIM_MASTER:${Build.MODEL.replace(":", "_")}")
+            }
+        } else {
+            // Slave: fermo la fotocamera locale
+            stopCamera()
+            if (broadcast) {
+                broadcastControlMessage("CMD_SET_ROLE:SLAVE")
+            }
+        }
+    }
+
+    private fun updateRoleUI() {
+        stopDrawingMode()
+
+        if (isMaster) {
+            roleLabel.text = "Ruolo: MASTER (Fotocamera)"
+            becomeMasterButton.visibility = View.GONE
+
+            // Master non ha il riquadro di visione della fotocamera remoto e non ha i pulsanti in basso
+            cameraContainer.visibility = View.GONE
+            bottomActionsBar.visibility = View.GONE
+            focusControlLayout.visibility = View.GONE
+            remoteImageView.visibility = View.GONE
+            localPreviewView.visibility = View.GONE
+
+            switchCameraButton.setColorFilter(Color.parseColor("#4CAF50"))
+        } else {
+            roleLabel.text = "Ruolo: SLAVE (Controllo)"
+            becomeMasterButton.visibility = View.VISIBLE
+
+            // Solo gli altri (slave) hanno i pulsanti in basso
+            bottomActionsBar.visibility = View.VISIBLE
+            scanButton.visibility = View.VISIBLE
+            loadPhotoButton.visibility = View.VISIBLE
+            editPhotoButton.visibility = if (lastCapturedPhoto != null) View.VISIBLE else View.GONE
+
+            updateCameraBoxUI()
+        }
+    }
+
+    private fun updateCameraBoxUI() {
+        if (isMaster) {
+            cameraContainer.visibility = View.GONE
+            bottomActionsBar.visibility = View.GONE
+            focusControlLayout.visibility = View.GONE
+            captureButton.visibility = View.GONE
+            return
+        }
+
+        // Solo gli altri hanno il riquadro di visione della fotocamera remoto e i pulsanti in basso
+        bottomActionsBar.visibility = View.VISIBLE
+
+        if (isCameraBoxVisible) {
+            // Premuto: diventa rosso e viene mostrato il riquadro della fotocamera per scattare le foto da remoto
+            switchCameraButton.setColorFilter(Color.parseColor("#F44336"))
+            cameraContainer.visibility = View.VISIBLE
+            remoteImageView.visibility = View.VISIBLE
+            localPreviewView.visibility = View.GONE
+            captureButton.visibility = View.VISIBLE
+            focusControlLayout.visibility = View.VISIBLE
+
+            sendControlMessageToMaster("CMD_START_STREAM")
+        } else {
+            // All'avvio / altrimenti: il pulsante è verde e il riquadro non viene mostrato
+            switchCameraButton.setColorFilter(Color.parseColor("#4CAF50"))
+            cameraContainer.visibility = View.GONE
+            remoteImageView.visibility = View.GONE
+            captureButton.visibility = View.GONE
+            focusControlLayout.visibility = View.GONE
+
+            sendControlMessageToMaster("CMD_STOP_STREAM")
+        }
+    }
+
+    private fun updateConnectionStatusUI() {
+        val count = connectedPeers.size
+        if (count == 0) {
+            remoteIpTextView.text = "Dispositivi connessi: 0"
+            statusTextView.text = if (isMaster) {
+                "Modalità: MASTER (In attesa di slave a cui trasmettere)"
+            } else {
+                "Modalità: SLAVE (In attesa del Master)"
+            }
+        } else {
+            val peerList = synchronized(connectedPeers) {
+                connectedPeers.values.joinToString(", ") { peer ->
+                    "${peer.deviceName.ifEmpty { peer.remoteIp }} (${peer.role})"
+                }
+            }
+            remoteIpTextView.text = "Connessi ($count): $peerList"
+            statusTextView.text = if (isMaster) {
+                val slavesCount = synchronized(connectedPeers) { connectedPeers.values.count { it.role == "SLAVE" } }
+                "MASTER: In streaming a $slavesCount Slave"
+            } else {
+                val masterPeer = synchronized(connectedPeers) { connectedPeers.values.find { it.role == "MASTER" } }
+                val masterName = masterPeer?.deviceName ?: masterPeer?.remoteIp ?: "In ricerca Master..."
+                "SLAVE: Connesso a Master ($masterName)"
+            }
         }
     }
 
@@ -426,8 +671,8 @@ class MainActivity : AppCompatActivity() {
                 addView(textView)
 
                 setOnClickListener {
-                    sendControlMessage("CMD_SET_DRAW_COLOR:$color")
-                    Toast.makeText(this@MainActivity, "Colore $name inviato al Master", Toast.LENGTH_SHORT).show()
+                    selectColorFromExternal(color)
+                    Toast.makeText(this@MainActivity, "Colore $name selezionato", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -435,49 +680,383 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startDrawingModeOnMaster() {
-        isDrawingMode = true
-        val photo = lastCapturedPhoto ?: return
+    private fun computeCurrentCustomColor(): Int {
+        return ColorUtils.HSLToColor(floatArrayOf(currentHue, currentSaturation, currentLightness))
+    }
+
+    private fun applyPaletteVisibility(activeIds: Set<Int>) {
+        assignedPaletteIds = activeIds
         runOnUiThread {
-            fullScreenDrawingContainer.visibility = View.VISIBLE
-            drawingView.setPhoto(photo)
-            drawingView.setStrokeColor(Color.RED)
-            drawingColorIndicator.setBackgroundColor(Color.RED)
+            paletteToolsContainer.visibility = if (activeIds.contains(1)) View.VISIBLE else View.GONE
+            paletteColorsContainer.visibility = if (activeIds.contains(2)) View.VISIBLE else View.GONE
+            paletteShadesContainer.visibility = if (activeIds.contains(3)) View.VISIBLE else View.GONE
+
+            updatePaletteBadgeAndTabsUI()
         }
     }
 
-    private fun stopDrawingModeOnMaster() {
-        isDrawingMode = false
-        runOnUiThread {
-            fullScreenDrawingContainer.visibility = View.GONE
-        }
-    }
+    private fun updatePaletteBadgeAndTabsUI() {
+        val density = resources.displayMetrics.density
 
-    private fun startDrawingModeOnSlave() {
-        isDrawingMode = true
-        stopCamera()
-        runOnUiThread {
-            slavePaletteContainer.visibility = View.VISIBLE
+        fun updateTabButton(button: Button, isSelected: Boolean) {
+            button.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 8 * density
+                setColor(if (isSelected) Color.parseColor("#2196F3") else Color.parseColor("#333333"))
+                if (isSelected) {
+                    setStroke((2 * density).toInt(), Color.WHITE)
+                }
+            }
+            button.setTextColor(if (isSelected) Color.WHITE else Color.parseColor("#AAAAAA"))
         }
-    }
 
-    private fun stopDrawingModeOnSlave() {
-        isDrawingMode = false
-        runOnUiThread {
-            slavePaletteContainer.visibility = View.GONE
-            if (roleSwitch.isChecked) {
-                startCameraIfSlave()
+        updateTabButton(tabPalette1Button, assignedPaletteIds.contains(1))
+        updateTabButton(tabPalette2Button, assignedPaletteIds.contains(2))
+        updateTabButton(tabPalette3Button, assignedPaletteIds.contains(3))
+
+        when {
+            assignedPaletteIds == setOf(1) -> {
+                paletteBadgeTextView.text = "PALETTE 1: STRUMENTI (PENNELLO)"
+                paletteBadgeDescTextView.text = "Dispositivo dedicato alla dimensione del pennello"
+            }
+            assignedPaletteIds == setOf(2) -> {
+                paletteBadgeTextView.text = "PALETTE 2: COLORI BASE"
+                paletteBadgeDescTextView.text = "Dispositivo dedicato ai 12 colori base"
+            }
+            assignedPaletteIds == setOf(3) -> {
+                paletteBadgeTextView.text = "PALETTE 3: COLOR SCHEME & SFUMATURE"
+                paletteBadgeDescTextView.text = "Dispositivo dedicato alle sfumature e armonie cromatiche"
+            }
+            assignedPaletteIds == setOf(2, 3) -> {
+                paletteBadgeTextView.text = "PALETTE 2 & 3: COLORI E SFUMATURE"
+                paletteBadgeDescTextView.text = "Dispositivo dedicato a colori, sfumature e armonie"
+            }
+            else -> {
+                paletteBadgeTextView.text = "TUTTE LE PALETTE DISPONIBILI"
+                paletteBadgeDescTextView.text = "Strumenti, colori e sfumature disponibili su questo dispositivo"
             }
         }
     }
 
-    private fun captureRemoteImage() {
-        if (activeSocket == null || dataOutputStream == null) {
-            Toast.makeText(this, "Non connesso", Toast.LENGTH_SHORT).show()
+    private fun parseAndApplyPaletteAssignment(config: String) {
+        val ids = config.split(",")
+            .mapNotNull { it.trim().toIntOrNull() }
+            .toSet()
+        val finalIds = if (ids.isEmpty()) setOf(1, 2, 3) else ids
+        applyPaletteVisibility(finalIds)
+    }
+
+    private fun distributePalettesToPeers() {
+        if (!isEditingLocally) return
+        val peers = synchronized(connectedPeers) {
+            connectedPeers.values.toList().sortedBy { it.remoteIp }
+        }
+        if (peers.isEmpty()) {
+            applyPaletteVisibility(setOf(1, 2, 3))
             return
         }
-        statusTextView.text = "Richiesta scatto alta risoluzione..."
-        sendControlMessage("CMD_TAKE_PHOTO")
+
+        when (peers.size) {
+            1 -> {
+                sendDataToPeer(peers[0], 1, "CMD_START_DRAWING:1,2,3".toByteArray())
+            }
+            2 -> {
+                sendDataToPeer(peers[0], 1, "CMD_START_DRAWING:1".toByteArray())
+                sendDataToPeer(peers[1], 1, "CMD_START_DRAWING:2,3".toByteArray())
+            }
+            else -> {
+                for (i in peers.indices) {
+                    val assignedId = (i % 3) + 1
+                    sendDataToPeer(peers[i], 1, "CMD_START_DRAWING:$assignedId".toByteArray())
+                }
+            }
+        }
+    }
+
+    private fun onUserSelectedPaletteTab(paletteId: Int) {
+        if (assignedPaletteIds == setOf(paletteId)) return
+        val previousPaletteId = assignedPaletteIds.firstOrNull() ?: 1
+
+        applyPaletteVisibility(setOf(paletteId))
+
+        broadcastControlMessage("CMD_SWAP_PALETTE:$previousPaletteId:$paletteId")
+    }
+
+    private fun setupCustomShadePalette() {
+        hueSliderView.setGradientColors(
+            Color.RED, Color.YELLOW, Color.GREEN, Color.CYAN, Color.BLUE, Color.MAGENTA, Color.RED
+        )
+        hueSliderView.progress = currentHue / 360f
+        shadeSliderView.progress = currentLightness
+        saturationSliderView.progress = currentSaturation
+
+        updateShadeSlidersGradients()
+        updateCustomShadePreviewUI()
+        generateShadeSwatches()
+        generateHarmonySwatches()
+
+        hueSliderView.onProgressChanged = { progress, fromUser ->
+            currentHue = (progress * 360f).coerceIn(0f, 360f)
+            onCustomColorComponentsChanged(fromUser, isFinal = false)
+        }
+        hueSliderView.onTrackingStopped = {
+            onCustomColorComponentsChanged(fromUser = true, isFinal = true)
+        }
+
+        shadeSliderView.onProgressChanged = { progress, fromUser ->
+            currentLightness = progress.coerceIn(0f, 1f)
+            onCustomColorComponentsChanged(fromUser, isFinal = false)
+        }
+        shadeSliderView.onTrackingStopped = {
+            onCustomColorComponentsChanged(fromUser = true, isFinal = true)
+        }
+
+        saturationSliderView.onProgressChanged = { progress, fromUser ->
+            currentSaturation = progress.coerceIn(0f, 1f)
+            onCustomColorComponentsChanged(fromUser, isFinal = false)
+        }
+        saturationSliderView.onTrackingStopped = {
+            onCustomColorComponentsChanged(fromUser = true, isFinal = true)
+        }
+
+        applyCustomShadeButton.setOnClickListener {
+            applyColorToDrawing(currentCustomColor, broadcast = true)
+            Toast.makeText(this, "Sfumatura ${formatHexColor(currentCustomColor)} applicata", Toast.LENGTH_SHORT).show()
+        }
+
+        customShadePreview.setOnClickListener {
+            applyColorToDrawing(currentCustomColor, broadcast = true)
+            Toast.makeText(this, "Sfumatura ${formatHexColor(currentCustomColor)} applicata", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun onCustomColorComponentsChanged(fromUser: Boolean, isFinal: Boolean) {
+        currentCustomColor = computeCurrentCustomColor()
+        updateShadeSlidersGradients()
+        updateCustomShadePreviewUI()
+
+        if (isFinal) {
+            generateShadeSwatches()
+            generateHarmonySwatches()
+        }
+
+        if (fromUser) {
+            applyColorToDrawing(currentCustomColor, broadcast = isFinal)
+        }
+    }
+
+    private fun updateShadeSlidersGradients() {
+        val black = ColorUtils.HSLToColor(floatArrayOf(currentHue, currentSaturation, 0f))
+        val mid = ColorUtils.HSLToColor(floatArrayOf(currentHue, currentSaturation, 0.5f))
+        val white = ColorUtils.HSLToColor(floatArrayOf(currentHue, currentSaturation, 1f))
+        shadeSliderView.setGradientColors(black, mid, white)
+
+        val desat = ColorUtils.HSLToColor(floatArrayOf(currentHue, 0f, currentLightness))
+        val sat = ColorUtils.HSLToColor(floatArrayOf(currentHue, 1f, currentLightness))
+        saturationSliderView.setGradientColors(desat, sat)
+    }
+
+    private fun updateCustomShadePreviewUI() {
+        val density = resources.displayMetrics.density
+        customShadePreview.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(currentCustomColor)
+            setStroke((2.5f * density).toInt(), Color.WHITE)
+        }
+        customShadeHexTextView.text = formatHexColor(currentCustomColor)
+    }
+
+    private fun formatHexColor(color: Int): String {
+        return String.format("#%06X", 0xFFFFFF and color)
+    }
+
+    private fun applyColorToDrawing(color: Int, broadcast: Boolean = true) {
+        currentCustomColor = color
+        drawingView.setStrokeColor(color)
+        drawingColorIndicator.setBackgroundColor(color)
+        updateCustomShadePreviewUI()
+
+        if (broadcast) {
+            broadcastControlMessage("CMD_SET_DRAW_COLOR:$color")
+        }
+    }
+
+    private fun selectColorFromExternal(color: Int) {
+        val hsl = FloatArray(3)
+        ColorUtils.colorToHSL(color, hsl)
+        currentHue = hsl[0]
+        currentSaturation = hsl[1]
+        currentLightness = hsl[2]
+        currentCustomColor = color
+
+        hueSliderView.progress = currentHue / 360f
+        shadeSliderView.progress = currentLightness
+        saturationSliderView.progress = currentSaturation
+
+        updateShadeSlidersGradients()
+        updateCustomShadePreviewUI()
+        generateShadeSwatches()
+        generateHarmonySwatches()
+
+        applyColorToDrawing(color, broadcast = true)
+    }
+
+    private fun syncColorFromRemote(color: Int) {
+        currentCustomColor = color
+        drawingView.setStrokeColor(color)
+        drawingColorIndicator.setBackgroundColor(color)
+
+        val hsl = FloatArray(3)
+        ColorUtils.colorToHSL(color, hsl)
+        currentHue = hsl[0]
+        currentSaturation = hsl[1]
+        currentLightness = hsl[2]
+
+        hueSliderView.progress = currentHue / 360f
+        shadeSliderView.progress = currentLightness
+        saturationSliderView.progress = currentSaturation
+
+        updateShadeSlidersGradients()
+        updateCustomShadePreviewUI()
+        generateShadeSwatches()
+        generateHarmonySwatches()
+    }
+
+    private fun generateShadeSwatches() {
+        generatedShadesContainer.removeAllViews()
+        val density = resources.displayMetrics.density
+
+        val lightnessLevels = listOf(
+            0.12f to "Ombra",
+            0.25f to "Scuro",
+            0.38f to "Medio",
+            0.50f to "Puro",
+            0.65f to "Chiaro",
+            0.78f to "Pastello",
+            0.88f to "Chiarissimo",
+            0.96f to "Luce"
+        )
+
+        for ((l, label) in lightnessLevels) {
+            val shadeColor = ColorUtils.HSLToColor(floatArrayOf(currentHue, currentSaturation, l))
+
+            val itemLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
+
+                val circleView = View(this@MainActivity).apply {
+                    val size = (42 * density).toInt()
+                    layoutParams = LinearLayout.LayoutParams(size, size)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(shadeColor)
+                        setStroke((2 * density).toInt(), Color.parseColor("#888888"))
+                    }
+                }
+
+                val textView = TextView(this@MainActivity).apply {
+                    text = label
+                    setTextColor(Color.parseColor("#CCCCCC"))
+                    textSize = 10f
+                    gravity = Gravity.CENTER
+                    setPadding(0, (3 * density).toInt(), 0, 0)
+                }
+
+                addView(circleView)
+                addView(textView)
+
+                setOnClickListener {
+                    currentLightness = l
+                    shadeSliderView.progress = l
+                    onCustomColorComponentsChanged(fromUser = true, isFinal = true)
+                    Toast.makeText(this@MainActivity, "Sfumatura $label selezionata", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            generatedShadesContainer.addView(itemLayout)
+        }
+    }
+
+    private fun generateHarmonySwatches() {
+        colorHarmoniesContainer.removeAllViews()
+        val density = resources.displayMetrics.density
+
+        val harmonies = listOf(
+            "Base" to currentHue,
+            "Complementare" to ((currentHue + 180f) % 360f),
+            "Analogo +" to ((currentHue + 30f) % 360f),
+            "Analogo -" to ((currentHue + 330f) % 360f),
+            "Triadico 1" to ((currentHue + 120f) % 360f),
+            "Triadico 2" to ((currentHue + 240f) % 360f)
+        )
+
+        for ((name, hue) in harmonies) {
+            val harmonyColor = ColorUtils.HSLToColor(floatArrayOf(hue, currentSaturation, currentLightness))
+
+            val itemLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
+
+                val circleView = View(this@MainActivity).apply {
+                    val size = (42 * density).toInt()
+                    layoutParams = LinearLayout.LayoutParams(size, size)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(harmonyColor)
+                        setStroke((2 * density).toInt(), Color.parseColor("#888888"))
+                    }
+                }
+
+                val textView = TextView(this@MainActivity).apply {
+                    text = name
+                    setTextColor(Color.parseColor("#CCCCCC"))
+                    textSize = 10f
+                    gravity = Gravity.CENTER
+                    setPadding(0, (3 * density).toInt(), 0, 0)
+                }
+
+                addView(circleView)
+                addView(textView)
+
+                setOnClickListener {
+                    currentHue = hue
+                    hueSliderView.progress = currentHue / 360f
+                    onCustomColorComponentsChanged(fromUser = true, isFinal = true)
+                    Toast.makeText(this@MainActivity, "Armonia $name selezionata", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            colorHarmoniesContainer.addView(itemLayout)
+        }
+    }
+
+    private fun startDrawingMode() {
+        val photo = lastCapturedPhoto ?: return
+        runOnUiThread {
+            fullScreenDrawingContainer.visibility = View.VISIBLE
+            drawingView.setPhoto(photo)
+            drawingView.setStrokeColor(currentCustomColor)
+            drawingColorIndicator.setBackgroundColor(currentCustomColor)
+        }
+    }
+
+    private fun stopDrawingMode() {
+        runOnUiThread {
+            fullScreenDrawingContainer.visibility = View.GONE
+            slavePaletteContainer.visibility = View.GONE
+        }
+    }
+
+    private fun captureRemoteImage() {
+        val masterPeer = synchronized(connectedPeers) { connectedPeers.values.find { it.role == "MASTER" } }
+        if (masterPeer == null) {
+            Toast.makeText(this, "Nessun Master connesso per scattare la foto", Toast.LENGTH_SHORT).show()
+            return
+        }
+        statusTextView.text = "Richiesta scatto foto remota al Master..."
+        sendDataToPeer(masterPeer, 1, "CMD_TAKE_PHOTO".toByteArray())
     }
 
     private fun saveImage(bitmap: Bitmap) {
@@ -503,97 +1082,83 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun rememberPeerIp(ip: String) {
+        val currentSet = prefs.getStringSet(PREF_KNOWN_IPS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (currentSet.add(ip)) {
+            prefs.edit().putStringSet(PREF_KNOWN_IPS, currentSet).apply()
+        }
+    }
+
     private fun startAutoReconnectionLoop() {
         thread {
             while (isReconnecting) {
-                if (activeSocket == null || !activeSocket!!.isConnected) {
-                    val lastIp = prefs.getString(PREF_LAST_IP, null)
-                    if (lastIp != null) {
-                        runOnUiThread { statusTextView.text = "Tentativo riconnessione: $lastIp..." }
-                        try {
-                            val address = InetAddress.getByName(lastIp)
-                            val socket = Socket()
-                            socket.connect(InetSocketAddress(address, FIXED_PORT), 2000)
-                            handleConnection(socket, false)
-                        } catch (e: Exception) {
-                            Log.d("RemoteCamera", "Riconnessione fallita, riprovo tra 3s")
+                try {
+                    val knownIps = prefs.getStringSet(PREF_KNOWN_IPS, emptySet()) ?: emptySet()
+                    val myIp = getLocalIpAddress()
+                    for (ip in knownIps) {
+                        if (ip != myIp && !connectedPeers.containsKey(ip)) {
+                            try {
+                                val address = InetAddress.getByName(ip)
+                                val socket = Socket()
+                                socket.connect(InetSocketAddress(address, FIXED_PORT), 1500)
+                                handleConnection(socket, false)
+                            } catch (e: Exception) {
+                                // Nessuna connessione possibile verso questo IP al momento
+                            }
                         }
                     }
+                } catch (e: Exception) {}
+
+                if (discoveryListener == null && nsdManager != null) {
+                    runOnUiThread { discoverServices() }
                 }
-                Thread.sleep(3000)
+
+                Thread.sleep(4000)
             }
         }
     }
 
     private fun startManualScan() {
-        val isSlave = roleSwitch.isChecked
-        statusTextView.text = if (isSlave) "In cerca di Master..." else "Configurazione Master..."
+        statusTextView.text = "Scansione dispositivi in corso..."
         unregisterService()
         stopDiscovery()
         thread {
             Thread.sleep(300)
             runOnUiThread {
-                if (!isSlave) {
-                    registerService(localPort)
-                    statusTextView.text = "Modalità: MASTER (Visibile)"
-                } else {
-                    discoverServices()
-                }
-            }
-        }
-    }
-
-    private fun updateRoleUI(isSlave: Boolean) {
-        runOnUiThread {
-            stopDrawingModeOnMaster()
-            stopDrawingModeOnSlave()
-            if (isSlave) {
-                statusTextView.text = "Modalità: SLAVE"
-                remoteImageView.visibility = View.GONE
-                remoteImageView.setImageBitmap(null)
-                lastReceivedBitmap = null
-                captureButton.visibility = View.GONE
-                focusControlLayout.visibility = View.GONE
-                editPhotoButton.visibility = View.GONE
-                loadPhotoButton.visibility = View.GONE
-                localPreviewView.visibility = View.VISIBLE
-                checkCameraPermission()
-            } else {
-                statusTextView.text = "Modalità: MASTER"
-                remoteImageView.visibility = View.VISIBLE
-                captureButton.visibility = View.VISIBLE
-                focusControlLayout.visibility = View.VISIBLE
-                editPhotoButton.visibility = View.VISIBLE
-                loadPhotoButton.visibility = View.VISIBLE
-                localPreviewView.visibility = View.GONE
-                stopCamera()
+                registerService(localPort)
+                discoverServices()
             }
         }
     }
 
     private fun checkCameraPermission() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            startCameraIfSlave()
+            if (isMaster) {
+                startCameraOnMaster()
+            }
         } else {
             requestPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
-    private fun startCameraIfSlave() {
-        if (!roleSwitch.isChecked) return
+    private fun startCameraOnMaster() {
+        if (!isMaster) return
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             try {
                 cameraProvider = cameraProviderFuture.get()
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(localPreviewView.surfaceProvider)
-                }
+
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
-                
+
+                val imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .build()
+                activeImageCapture = imageCapture
+
                 imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                    if (roleSwitch.isChecked && activeSocket?.isConnected == true && !isDrawingMode) {
+                    if (isMaster && connectedPeers.isNotEmpty() && isStreamingRequested) {
                         try {
                             val bitmap = imageProxy.toBitmap()
                             val rotation = imageProxy.imageInfo.rotationDegrees
@@ -606,54 +1171,85 @@ class MainActivity : AppCompatActivity() {
                             }
                             val stream = ByteArrayOutputStream()
                             outBitmap.compress(Bitmap.CompressFormat.JPEG, 35, stream)
-                            sendData(2, stream.toByteArray())
+                            val bytes = stream.toByteArray()
+
+                            val slavePeers = synchronized(connectedPeers) {
+                                connectedPeers.values.filter { it.role == "SLAVE" }
+                            }
+                            for (slave in slavePeers) {
+                                try {
+                                    synchronized(slave.outputStream) {
+                                        slave.outputStream.writeByte(2)
+                                        slave.outputStream.writeInt(bytes.size)
+                                        slave.outputStream.write(bytes)
+                                        slave.outputStream.flush()
+                                    }
+                                } catch (e: Exception) {
+                                    disconnectPeer(slave.remoteIp)
+                                }
+                            }
+
                             if (outBitmap !== bitmap) outBitmap.recycle()
                             bitmap.recycle()
                         } catch (e: Exception) {
-                            Log.e("RemoteCamera", "Analisi fallita: ${e.message}")
+                            Log.e("RemoteCamera", "Analisi frame Master fallita: ${e.message}")
                         }
                     }
                     imageProxy.close()
                 }
+
                 cameraProvider?.unbindAll()
-                camera = cameraProvider?.bindToLifecycle(this, currentCameraSelector, preview, imageAnalysis)
-                // Default AF ON
+                camera = cameraProvider?.bindToLifecycle(this, currentCameraSelector, imageAnalysis, imageCapture)
                 enableAutofocus(true)
+
+                runOnUiThread {
+                    statusTextView.text = "Fotocamera attiva (Master in streaming agli Slave)"
+                }
             } catch (e: Exception) {
-                Log.e("RemoteCamera", "Errore avvio camera", e)
+                Log.e("RemoteCamera", "Errore avvio fotocamera Master", e)
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun takeHighResPhoto() {
-        if (!roleSwitch.isChecked) return
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        cameraProviderFuture.addListener({
-            try {
-                val provider = cameraProviderFuture.get()
-                val imageCapture = ImageCapture.Builder()
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                    .build()
-                provider.bindToLifecycle(this, currentCameraSelector, imageCapture)
-                imageCapture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
-                    override fun onCaptureSuccess(image: ImageProxy) {
-                        val bitmap = image.toBitmap()
-                        val rotation = image.imageInfo.rotationDegrees
-                        val matrix = Matrix()
-                        matrix.postRotate(rotation.toFloat())
-                        val rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-                        val stream = ByteArrayOutputStream()
-                        rotatedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
-                        sendData(3, stream.toByteArray())
-                        image.close()
-                        bitmap.recycle()
-                        if (rotatedBitmap !== bitmap) rotatedBitmap.recycle()
-                        runOnUiThread { provider.unbind(imageCapture) }
+    private fun takeHighResPhoto(requesterPeer: PeerConnection?) {
+        val capture = activeImageCapture ?: return
+        capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                try {
+                    val bitmap = image.toBitmap()
+                    val rotation = image.imageInfo.rotationDegrees
+                    val matrix = Matrix()
+                    matrix.postRotate(rotation.toFloat())
+                    val rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                    val stream = ByteArrayOutputStream()
+                    rotatedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                    val photoBytes = stream.toByteArray()
+
+                    // Salva la foto locale sul Master
+                    saveImage(rotatedBitmap)
+
+                    // Invia la foto ad alta risoluzione allo slave richiedente (o a tutti gli slave)
+                    if (requesterPeer != null) {
+                        sendDataToPeer(requesterPeer, 3, photoBytes)
+                    } else {
+                        val slaves = synchronized(connectedPeers) { connectedPeers.values.filter { it.role == "SLAVE" } }
+                        for (slave in slaves) {
+                            sendDataToPeer(slave, 3, photoBytes)
+                        }
                     }
-                    override fun onError(exception: ImageCaptureException) { Log.e("RemoteCamera", "Scatto fallito", exception) }
-                })
-            } catch (e: Exception) { Log.e("RemoteCamera", "Errore Photo Capture", e) }
-        }, ContextCompat.getMainExecutor(this))
+
+                    image.close()
+                    bitmap.recycle()
+                    if (rotatedBitmap !== bitmap) rotatedBitmap.recycle()
+                } catch (e: Exception) {
+                    Log.e("RemoteCamera", "Errore elaborazione foto scattata: ${e.message}")
+                }
+            }
+
+            override fun onError(exception: ImageCaptureException) {
+                Log.e("RemoteCamera", "Scatto foto fallito: ${exception.message}")
+            }
+        })
     }
 
     private fun stopCamera() {
@@ -661,6 +1257,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 cameraProvider?.unbindAll()
                 camera = null
+                activeImageCapture = null
             } catch (e: Exception) {}
         }
     }
@@ -686,8 +1283,11 @@ class MainActivity : AppCompatActivity() {
                 val ss = try { ServerSocket(FIXED_PORT) } catch (e: Exception) { ServerSocket(0) }
                 serverSocket = ss
                 localPort = ss.localPort
-                runOnUiThread { registerService(localPort) }
-                while (true) {
+                runOnUiThread {
+                    registerService(localPort)
+                    discoverServices()
+                }
+                while (isReconnecting) {
                     val client = ss.accept()
                     handleConnection(client, true)
                 }
@@ -696,158 +1296,307 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleConnection(socket: Socket, isIncoming: Boolean) {
-        if (activeSocket?.isConnected == true && activeSocket?.inetAddress?.hostAddress == socket.inetAddress.hostAddress) {
-            socket.close()
-            return
+        val remoteIp = socket.inetAddress?.hostAddress ?: return
+
+        synchronized(connectedPeers) {
+            val existing = connectedPeers[remoteIp]
+            if (existing != null && existing.socket.isConnected && !existing.socket.isClosed) {
+                socket.close()
+                return
+            }
         }
-        activeSocket?.close()
-        activeSocket = socket
-        val remoteIp = socket.inetAddress.hostAddress
-        if (remoteIp != null) { prefs.edit().putString(PREF_LAST_IP, remoteIp).apply() }
-        runOnUiThread {
-            remoteIpTextView.text = "Indirizzo Remoto: $remoteIp"
-            statusTextView.text = "Connesso a $remoteIp"
+
+        try {
+            val out = DataOutputStream(socket.getOutputStream())
+            val peer = PeerConnection(socket, out, remoteIp)
+            connectedPeers[remoteIp] = peer
+
+            rememberPeerIp(remoteIp)
+
+            runOnUiThread {
+                updateConnectionStatusUI()
+                if (isEditingLocally) {
+                    distributePalettesToPeers()
+                }
+            }
+
+            // Invia handshake iniziale con ruolo e nome dispositivo
+            val myRole = if (isMaster) "MASTER" else "SLAVE"
+            val handshakeMsg = "CMD_HELLO:$myRole:${Build.MODEL.replace(":", "_")}"
+            sendDataToPeer(peer, 1, handshakeMsg.toByteArray())
+
+            thread {
+                readLoop(peer)
+            }
+        } catch (e: Exception) {
+            Log.e("RemoteCamera", "Errore handshake con $remoteIp: ${e.message}")
+            try { socket.close() } catch (ex: Exception) {}
         }
-        thread {
-            try {
-                dataOutputStream = DataOutputStream(socket.getOutputStream())
-                val myRole = if (roleSwitch.isChecked) "SLAVE" else "MASTER"
-                val connectionType = if (isIncoming) "SERVER" else "CLIENT"
-                sendControlMessage("CMD_SYNC_ROLE:$myRole:$connectionType")
-                val dataInputStream = DataInputStream(socket.getInputStream())
-                while (true) {
-                    val type = dataInputStream.readByte().toInt()
-                    val length = dataInputStream.readInt()
-                    val payload = ByteArray(length)
-                    dataInputStream.readFully(payload)
-                    if (type == 1) {
-                        processControlMessage(String(payload), isIncoming)
-                    } else if (type == 2) {
-                        if (!roleSwitch.isChecked) {
+    }
+
+    private fun readLoop(peer: PeerConnection) {
+        try {
+            val inputStream = DataInputStream(peer.socket.getInputStream())
+            while (peer.isAlive && !peer.socket.isClosed && isReconnecting) {
+                val type = inputStream.readByte().toInt()
+                val length = inputStream.readInt()
+                if (length < 0 || length > 30 * 1024 * 1024) {
+                    throw IllegalStateException("Dimensione payload non valida: $length")
+                }
+                val payload = ByteArray(length)
+                inputStream.readFully(payload)
+
+                when (type) {
+                    1 -> {
+                        val message = String(payload)
+                        processControlMessage(peer, message)
+                    }
+                    2 -> {
+                        // Frame video ricevuto dal Master sullo Slave
+                        if (!isMaster && isCameraBoxVisible) {
                             val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size)
-                            runOnUiThread { 
-                                val oldBitmap = lastReceivedBitmap
-                                lastReceivedBitmap = bitmap
-                                remoteImageView.setImageBitmap(bitmap)
-                                oldBitmap?.recycle()
+                            if (bitmap != null) {
+                                runOnUiThread {
+                                    val oldBitmap = lastReceivedBitmap
+                                    lastReceivedBitmap = bitmap
+                                    remoteImageView.setImageBitmap(bitmap)
+                                    oldBitmap?.recycle()
+                                }
                             }
                         }
-                    } else if (type == 3) {
-                        if (!roleSwitch.isChecked) {
+                    }
+                    3 -> {
+                        // Foto ad alta risoluzione ricevuta dal Master sullo Slave
+                        if (!isMaster) {
                             val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size)
-                            lastCapturedPhoto = bitmap
-                            saveImage(bitmap)
+                            if (bitmap != null) {
+                                lastCapturedPhoto = bitmap
+                                saveImage(bitmap)
+                                runOnUiThread {
+                                    remoteImageView.setImageBitmap(bitmap)
+                                    editPhotoButton.visibility = View.VISIBLE
+                                    Toast.makeText(this@MainActivity, "Foto scattata dal Master ricevuta!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
                     }
                 }
-            } catch (e: Exception) { Log.e("RemoteCamera", "Connection closed") } finally {
-                activeSocket = null
-                runOnUiThread {
-                    statusTextView.text = "Disconnesso. Riprovo..."
-                    remoteIpTextView.text = "Indirizzo Remoto: -"
-                    remoteImageView.setImageBitmap(null)
-                    lastReceivedBitmap = null
-                    stopDrawingModeOnMaster()
-                    stopDrawingModeOnSlave()
-                    stopCamera()
-                }
+            }
+        } catch (e: Exception) {
+            Log.d("RemoteCamera", "Connessione chiusa con ${peer.remoteIp}")
+        } finally {
+            disconnectPeer(peer.remoteIp)
+        }
+    }
+
+    private fun disconnectPeer(ip: String) {
+        val peer = connectedPeers.remove(ip)
+        peer?.isAlive = false
+        try { peer?.socket?.close() } catch (e: Exception) {}
+
+        runOnUiThread {
+            updateConnectionStatusUI()
+            if (isEditingLocally) {
+                distributePalettesToPeers()
+            }
+            if (connectedPeers.isEmpty() && !isMaster) {
+                remoteImageView.setImageBitmap(null)
+                lastReceivedBitmap = null
             }
         }
     }
 
-    private fun processControlMessage(message: String, isIncoming: Boolean) {
-        if (message.startsWith("CMD_SYNC_ROLE:")) {
+    private fun processControlMessage(peer: PeerConnection, message: String) {
+        if (message.startsWith("CMD_HELLO:")) {
             val parts = message.split(":")
-            if (parts.size >= 3) {
-                val remoteRoleIsSlave = parts[1] == "SLAVE"
-                runOnUiThread {
-                    val myRoleIsSlave = roleSwitch.isChecked
-                    if (myRoleIsSlave == remoteRoleIsSlave) {
-                        if (!isIncoming) {
-                            isUpdatingFromRemote = true
-                            roleSwitch.isChecked = !myRoleIsSlave
-                            updateRoleUI(roleSwitch.isChecked)
-                            isUpdatingFromRemote = false
-                            prefs.edit().putBoolean(PREF_ROLE, roleSwitch.isChecked).apply()
-                        }
+            val remoteRole = parts.getOrNull(1) ?: "SLAVE"
+            val remoteName = parts.getOrNull(2) ?: peer.remoteIp
+            peer.role = remoteRole
+            peer.deviceName = remoteName
+
+            if (remoteRole == "MASTER" && isMaster) {
+                // Uno solo diventa master: risoluzione conflitto deterministica
+                val localIp = getLocalIpAddress()
+                if (localIp < peer.remoteIp) {
+                    runOnUiThread {
+                        setMasterRole(false, broadcast = false)
+                        Toast.makeText(this@MainActivity, "Conflitto Master: ceduto a $remoteName", Toast.LENGTH_SHORT).show()
                     }
+                } else {
+                    sendDataToPeer(peer, 1, "CMD_CLAIM_MASTER:${Build.MODEL.replace(":", "_")}".toByteArray())
                 }
             }
-        } else if (message.startsWith("CMD_SET_ROLE:")) {
-            val targetRole = message.substringAfter("CMD_SET_ROLE:")
+
+            runOnUiThread { updateConnectionStatusUI() }
+
+        } else if (message.startsWith("CMD_CLAIM_MASTER") || message.startsWith("CMD_SET_ROLE:MASTER")) {
+            val parts = message.split(":")
+            val senderName = parts.getOrNull(1) ?: peer.deviceName.ifEmpty { peer.remoteIp }
+            peer.role = "MASTER"
+
+            // Uno solo diventa master: se ero master, divento slave
             runOnUiThread {
-                val newRoleIsSlave = targetRole == "SLAVE"
-                if (roleSwitch.isChecked != newRoleIsSlave) {
-                    isUpdatingFromRemote = true
-                    roleSwitch.isChecked = newRoleIsSlave
-                    updateRoleUI(newRoleIsSlave)
-                    prefs.edit().putBoolean(PREF_ROLE, newRoleIsSlave).apply()
-                    isUpdatingFromRemote = false
+                if (isMaster) {
+                    setMasterRole(false, broadcast = false)
+                    Toast.makeText(this, "$senderName è ora MASTER (fotocamera). Questo dispositivo è SLAVE.", Toast.LENGTH_SHORT).show()
                 }
+                updateConnectionStatusUI()
             }
+
+        } else if (message == "CMD_SET_ROLE:SLAVE") {
+            peer.role = "SLAVE"
+            runOnUiThread { updateConnectionStatusUI() }
+
+        } else if (message == "CMD_START_STREAM") {
+            if (isMaster) {
+                isStreamingRequested = true
+            }
+
+        } else if (message == "CMD_STOP_STREAM") {
+            if (isMaster) {
+                isStreamingRequested = false
+            }
+
         } else if (message == "CMD_TAKE_PHOTO") {
-            takeHighResPhoto()
+            if (isMaster) {
+                takeHighResPhoto(peer)
+            }
+
         } else if (message == "CMD_AF_ON") {
-            enableAutofocus(true)
+            if (isMaster) enableAutofocus(true)
+
         } else if (message == "CMD_AF_OFF") {
-            enableAutofocus(false)
+            if (isMaster) enableAutofocus(false)
+
         } else if (message.startsWith("CMD_FOCUS_SET:")) {
-            val value = message.substringAfter("CMD_FOCUS_SET:").toFloatOrNull() ?: 0f
-            setManualFocus(value / 100f)
+            if (isMaster) {
+                val value = message.substringAfter("CMD_FOCUS_SET:").toFloatOrNull() ?: 0f
+                setManualFocus(value / 100f)
+            }
+
         } else if (message == "CMD_GET_CAMERA_LIST") {
-            sendCameraListToRemote()
+            if (isMaster) {
+                sendCameraListToPeer(peer)
+            }
+
         } else if (message.startsWith("CMD_CAMERA_LIST:")) {
             val listString = message.substringAfter("CMD_CAMERA_LIST:")
             runOnUiThread { showRemoteCameraSelectionMenu(listString) }
+
         } else if (message.startsWith("CMD_SET_CAMERA_ID:")) {
-            val cameraId = message.substringAfter("CMD_SET_CAMERA_ID:")
-            runOnUiThread { switchCameraById(cameraId) }
+            if (isMaster) {
+                val cameraId = message.substringAfter("CMD_SET_CAMERA_ID:")
+                runOnUiThread { switchCameraById(cameraId) }
+            }
+
         } else if (message.startsWith("CMD_CAMERA_CHANGED:")) {
             val info = message.substringAfter("CMD_CAMERA_CHANGED:")
-            runOnUiThread { 
-                Toast.makeText(this, "Camera cambiata (ID: $info)", Toast.LENGTH_SHORT).show()
+            runOnUiThread {
+                Toast.makeText(this, "Fotocamera Master cambiata (ID: $info)", Toast.LENGTH_SHORT).show()
             }
-        } else if (message == "CMD_START_DRAWING") {
-            if (roleSwitch.isChecked) {
-                startDrawingModeOnSlave()
-            } else {
-                if (lastCapturedPhoto != null) {
-                    startDrawingModeOnMaster()
-                } else {
-                    sendControlMessage("CMD_NO_PHOTO")
-                    runOnUiThread {
-                        Toast.makeText(this, "Nessuna foto scattata disponibile", Toast.LENGTH_SHORT).show()
-                    }
+
+        } else if (message.startsWith("CMD_START_DRAWING")) {
+            runOnUiThread {
+                isEditingLocally = false
+                fullScreenDrawingContainer.visibility = View.GONE
+                backToDrawingButton.visibility = View.GONE
+                slavePaletteContainer.bringToFront()
+                slavePaletteContainer.visibility = View.VISIBLE
+
+                val config = if (message.contains(":")) message.substringAfter("CMD_START_DRAWING:") else "1,2,3"
+                parseAndApplyPaletteAssignment(config)
+                Toast.makeText(this, "Modifica avviata: palette assegnata a questo dispositivo", Toast.LENGTH_SHORT).show()
+            }
+
+        } else if (message.startsWith("CMD_SET_PALETTE_ASSIGNMENT:")) {
+            val config = message.substringAfter("CMD_SET_PALETTE_ASSIGNMENT:")
+            runOnUiThread {
+                isEditingLocally = false
+                fullScreenDrawingContainer.visibility = View.GONE
+                backToDrawingButton.visibility = View.GONE
+                slavePaletteContainer.bringToFront()
+                slavePaletteContainer.visibility = View.VISIBLE
+
+                parseAndApplyPaletteAssignment(config)
+            }
+
+        } else if (message.startsWith("CMD_SWAP_PALETTE:")) {
+            val parts = message.substringAfter("CMD_SWAP_PALETTE:").split(":")
+            val givenPalette = parts.getOrNull(0)?.toIntOrNull() ?: 1
+            val takenPalette = parts.getOrNull(1)?.toIntOrNull() ?: 2
+            runOnUiThread {
+                if (assignedPaletteIds.contains(takenPalette)) {
+                    applyPaletteVisibility(setOf(givenPalette))
+                    Toast.makeText(this@MainActivity, "Scambio palette: ora visualizzi la Palette $givenPalette", Toast.LENGTH_SHORT).show()
                 }
             }
+
         } else if (message == "CMD_STOP_DRAWING") {
-            if (roleSwitch.isChecked) {
-                stopDrawingModeOnSlave()
-            } else {
-                stopDrawingModeOnMaster()
+            runOnUiThread {
+                isEditingLocally = false
+                stopDrawingMode()
             }
+
+        } else if (message == "CMD_CLOSE_APP") {
+            runOnUiThread {
+                Toast.makeText(this@MainActivity, "Chiusura app sincronizzata da dispositivo remoto", Toast.LENGTH_SHORT).show()
+                cleanupAndExit(broadcast = false)
+            }
+
         } else if (message.startsWith("CMD_SET_DRAW_COLOR:")) {
             val colorStr = message.substringAfter("CMD_SET_DRAW_COLOR:")
             val colorInt = colorStr.toIntOrNull() ?: Color.RED
             runOnUiThread {
-                drawingView.setStrokeColor(colorInt)
-                drawingColorIndicator.setBackgroundColor(colorInt)
+                syncColorFromRemote(colorInt)
+                Toast.makeText(this, "Colore pennello aggiornato da remoto", Toast.LENGTH_SHORT).show()
             }
+
         } else if (message.startsWith("CMD_SET_DRAW_SIZE:")) {
             val sizeStr = message.substringAfter("CMD_SET_DRAW_SIZE:")
             val sizeFloat = sizeStr.toFloatOrNull() ?: 12f
             runOnUiThread {
                 drawingView.setStrokeWidth(sizeFloat)
-            }
-        } else if (message == "CMD_NO_PHOTO") {
-            runOnUiThread {
-                Toast.makeText(this, "Nessuna foto disponibile sul Master", Toast.LENGTH_SHORT).show()
+                brushSizeValueTextView.text = "${sizeFloat.toInt()} px"
+                updateBrushPreview(sizeFloat.toInt())
             }
         }
     }
 
+    private fun sendDataToPeer(peer: PeerConnection, type: Int, data: ByteArray) {
+        networkExecutor.execute {
+            try {
+                synchronized(peer.outputStream) {
+                    peer.outputStream.writeByte(type)
+                    peer.outputStream.writeInt(data.size)
+                    peer.outputStream.write(data)
+                    peer.outputStream.flush()
+                }
+            } catch (e: Exception) {
+                Log.e("RemoteCamera", "Errore invio a ${peer.remoteIp}: ${e.message}")
+                disconnectPeer(peer.remoteIp)
+            }
+        }
+    }
+
+    private fun broadcastControlMessage(message: String) {
+        val peers = synchronized(connectedPeers) { connectedPeers.values.toList() }
+        val data = message.toByteArray()
+        for (peer in peers) {
+            sendDataToPeer(peer, 1, data)
+        }
+    }
+
+    private fun sendControlMessageToMaster(message: String) {
+        val masterPeer = synchronized(connectedPeers) { connectedPeers.values.find { it.role == "MASTER" } }
+        if (masterPeer != null) {
+            sendDataToPeer(masterPeer, 1, message.toByteArray())
+        } else {
+            broadcastControlMessage(message)
+        }
+    }
+
     @OptIn(ExperimentalLensFacing::class, ExperimentalCamera2Interop::class)
-    private fun sendCameraListToRemote() {
+    private fun sendCameraListToPeer(peer: PeerConnection) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             try {
@@ -855,8 +1604,8 @@ class MainActivity : AppCompatActivity() {
                 val cameraInfos = provider.availableCameraInfos
                 val manager = getSystemService(CAMERA_SERVICE) as CameraManager
                 val allIds = manager.cameraIdList
-                
-                val listString = cameraInfos.mapIndexed { index, info ->
+
+                val listString = cameraInfos.mapIndexed { _, info ->
                     val cam2Info = Camera2CameraInfo.from(info)
                     val id = cam2Info.cameraId
                     val facingInt = info.lensFacing
@@ -868,27 +1617,26 @@ class MainActivity : AppCompatActivity() {
                     }
                     "$facing|$id"
                 }.joinToString(";")
-                
+
                 val existingIds = cameraInfos.map { Camera2CameraInfo.from(it).cameraId }
                 val missingIds = allIds.filter { it !in existingIds }
-                
+
                 val missingString = missingIds.map { id ->
                     "Sconosciuta (Forzata)|$id"
                 }.joinToString(";")
-                
+
                 val fullList = if (missingString.isEmpty()) listString else "$listString;$missingString"
-                
-                sendControlMessage("CMD_CAMERA_LIST:${if (fullList.isEmpty()) "Nessuna camera" else fullList}")
-                Log.d("RemoteCamera", "Full list sent: $fullList")
+
+                sendDataToPeer(peer, 1, "CMD_CAMERA_LIST:${if (fullList.isEmpty()) "Nessuna camera" else fullList}".toByteArray())
             } catch (e: Exception) {
-                sendControlMessage("CMD_CAMERA_LIST:Errore")
+                sendDataToPeer(peer, 1, "CMD_CAMERA_LIST:Errore".toByteArray())
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun showRemoteCameraSelectionMenu(listString: String) {
         if (listString == "Nessuna camera" || listString == "Errore") {
-            Toast.makeText(this, "Nessuna camera trovata", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Nessuna telecamera trovata sul Master", Toast.LENGTH_SHORT).show()
             return
         }
         val itemsData = listString.split(";")
@@ -896,11 +1644,11 @@ class MainActivity : AppCompatActivity() {
         val ids = itemsData.map { it.substringAfter("|") }
 
         AlertDialog.Builder(this)
-            .setTitle("Scegli Telecamera Remota")
+            .setTitle("Scegli Telecamera del Master")
             .setItems(displayItems) { _, which ->
-                sendControlMessage("CMD_SET_CAMERA_ID:${ids[which]}")
+                sendControlMessageToMaster("CMD_SET_CAMERA_ID:${ids[which]}")
             }
-            .setNeutralButton("Aggiorna") { _, _ -> sendControlMessage("CMD_GET_CAMERA_LIST") }
+            .setNeutralButton("Aggiorna") { _, _ -> sendControlMessageToMaster("CMD_GET_CAMERA_LIST") }
             .show()
     }
 
@@ -914,8 +1662,10 @@ class MainActivity : AppCompatActivity() {
                     .addCameraFilter { infos ->
                         infos.filter { Camera2CameraInfo.from(it).cameraId == cameraId }
                     }.build()
-                startCameraIfSlave()
-                sendControlMessage("CMD_CAMERA_CHANGED:$cameraId")
+                if (isMaster) {
+                    startCameraOnMaster()
+                }
+                broadcastControlMessage("CMD_CAMERA_CHANGED:$cameraId")
             } catch (e: Exception) {
                 Log.e("RemoteCamera", "Errore switch ID", e)
             }
@@ -933,7 +1683,7 @@ class MainActivity : AppCompatActivity() {
                 val allIds = manager.cameraIdList
 
                 val itemsData = mutableListOf<Pair<String, String>>()
-                
+
                 cameraInfos.forEach { info ->
                     val cam2Info = Camera2CameraInfo.from(info)
                     val id = cam2Info.cameraId
@@ -946,7 +1696,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     itemsData.add(name to id)
                 }
-                
+
                 val existingIds = itemsData.map { it.second }
                 allIds.filter { it !in existingIds }.forEach { id ->
                     itemsData.add("Sconosciuta (Forzata) $id" to id)
@@ -955,7 +1705,7 @@ class MainActivity : AppCompatActivity() {
                 val displayItems = itemsData.map { it.first }.toTypedArray()
 
                 AlertDialog.Builder(this)
-                    .setTitle("Scegli Telecamera")
+                    .setTitle("Scegli Telecamera Locale (Master)")
                     .setItems(displayItems) { _, which ->
                         switchCameraById(itemsData[which].second)
                     }
@@ -977,7 +1727,7 @@ class MainActivity : AppCompatActivity() {
         }
         camera2CameraControl.captureRequestOptions = options.build()
     }
-    
+
     @OptIn(ExperimentalCamera2Interop::class)
     private fun setManualFocus(distance: Float) {
         val cam = camera ?: return
@@ -988,31 +1738,49 @@ class MainActivity : AppCompatActivity() {
         camera2CameraControl.captureRequestOptions = options.build()
     }
 
-    private fun sendControlMessage(message: String) { sendData(1, message.toByteArray()) }
+    @Volatile
+    private var isClosingApp = false
 
-    private fun sendData(type: Int, data: ByteArray) {
-        val out = dataOutputStream ?: return
-        thread {
+    private fun broadcastControlMessageSync(message: String) {
+        val peers = synchronized(connectedPeers) { connectedPeers.values.toList() }
+        val data = message.toByteArray()
+        for (peer in peers) {
             try {
-                synchronized(out) {
-                    out.writeByte(type)
-                    out.writeInt(data.size)
-                    out.write(data)
-                    out.flush()
+                synchronized(peer.outputStream) {
+                    peer.outputStream.writeByte(1)
+                    peer.outputStream.writeInt(data.size)
+                    peer.outputStream.write(data)
+                    peer.outputStream.flush()
                 }
             } catch (e: Exception) {}
         }
     }
 
-    private fun cleanupAndExit() {
+    private fun cleanupAndExit(broadcast: Boolean = true) {
+        if (isClosingApp) return
+        isClosingApp = true
         isReconnecting = false
+
         thread {
             try {
+                if (broadcast) {
+                    try {
+                        broadcastControlMessageSync("CMD_CLOSE_APP")
+                        Thread.sleep(150)
+                    } catch (e: Exception) {}
+                }
+
                 cameraExecutor.shutdownNow()
+                networkExecutor.shutdownNow()
                 runOnUiThread { cameraProvider?.unbindAll() }
                 unregisterService()
                 stopDiscovery()
-                activeSocket?.close()
+                synchronized(connectedPeers) {
+                    for (peer in connectedPeers.values) {
+                        try { peer.socket.close() } catch (e: Exception) {}
+                    }
+                    connectedPeers.clear()
+                }
                 serverSocket?.close()
             } catch (e: Exception) {
             } finally {
@@ -1024,7 +1792,7 @@ class MainActivity : AppCompatActivity() {
     private fun registerService(port: Int) {
         if (registrationListener != null || port <= 0) return
         val serviceInfo = NsdServiceInfo().apply {
-            serviceName = this@MainActivity.serviceName
+            serviceName = "${this@MainActivity.serviceName}-$port"
             serviceType = this@MainActivity.serviceType
             setPort(port)
         }
@@ -1050,12 +1818,16 @@ class MainActivity : AppCompatActivity() {
             override fun onDiscoveryStarted(regType: String) {}
             override fun onServiceFound(service: NsdServiceInfo) {
                 if ((service.serviceType.contains("remotecamera") || service.serviceType.contains(serviceType)) && service.serviceName != serviceName) {
-                    nsdManager?.resolveService(service, object : NsdManager.ResolveListener {
-                        override fun onResolveFailed(s: NsdServiceInfo, e: Int) {}
-                        override fun onServiceResolved(s: NsdServiceInfo) {
-                            connectToServer(s.host, s.port)
-                        }
-                    })
+                    try {
+                        nsdManager?.resolveService(service, object : NsdManager.ResolveListener {
+                            override fun onResolveFailed(s: NsdServiceInfo, e: Int) {}
+                            override fun onServiceResolved(s: NsdServiceInfo) {
+                                connectToServer(s.host, s.port)
+                            }
+                        })
+                    } catch (e: Exception) {
+                        Log.e("RemoteCamera", "Errore resolveService: ${e.message}")
+                    }
                 }
             }
             override fun onServiceLost(s: NsdServiceInfo) {}
@@ -1072,23 +1844,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectToServer(address: InetAddress, port: Int) {
+        val host = address.hostAddress ?: return
+        if (host == getLocalIpAddress()) return
+        if (connectedPeers.containsKey(host)) return
+
         thread {
             try {
-                handleConnection(Socket(address, port), false)
-            } catch (e: Exception) { Log.e("RemoteCamera", "Connection error") }
+                val socket = Socket()
+                socket.connect(InetSocketAddress(address, port), 2500)
+                handleConnection(socket, false)
+            } catch (e: Exception) {
+                Log.d("RemoteCamera", "Connessione fallita a $host:$port")
+            }
         }
     }
 
     override fun onDestroy() {
-        isReconnecting = false
-        try {
-            cameraExecutor.shutdownNow()
-            cameraProvider?.unbindAll()
-            unregisterService()
-            stopDiscovery()
-            activeSocket?.close()
-            serverSocket?.close()
-        } catch (e: Exception) {}
+        if (!isClosingApp) {
+            cleanupAndExit(broadcast = true)
+        }
         super.onDestroy()
     }
 }

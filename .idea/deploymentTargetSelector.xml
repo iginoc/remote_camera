@@ -4,10 +4,10 @@
     <selectionStates>
       <SelectionState runConfigName="app">
         <option name="selectionMode" value="DIALOG" />
-        <DropdownSelection timestamp="2026-10-07T08:13:32.652009135Z">
+        <DropdownSelection timestamp="2026-10-07T16:47:09.126761784Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="PhysicalDevice" identifier="serial=HPV39CVH" />
+              <DeviceId pluginId="Wireless" identifier="serviceName=adb-32081FDH2003S5-QmIAO4" />
             </handle>
           </Target>
         </DropdownSelection>
@@ -15,22 +15,12 @@
           <targets>
             <Target type="DEFAULT_BOOT">
               <handle>
-                <DeviceId pluginId="PhysicalDevice" identifier="serial=R58M62ZHTTX" />
-              </handle>
-            </Target>
-            <Target type="DEFAULT_BOOT">
-              <handle>
-                <DeviceId pluginId="PhysicalDevice" identifier="serial=HPV54MRP" />
-              </handle>
-            </Target>
-            <Target type="DEFAULT_BOOT">
-              <handle>
                 <DeviceId pluginId="PhysicalDevice" identifier="serial=R58RB2CEZZK" />
               </handle>
             </Target>
             <Target type="DEFAULT_BOOT">
               <handle>
-                <DeviceId pluginId="PhysicalDevice" identifier="serial=HPV39CVH" />
+                <DeviceId pluginId="PhysicalDevice" identifier="serial=HPV54MRP" />
               </handle>
             </Target>
           </targets>

@@ -93,7 +93,6 @@
         android:id="@+id/cameraContainer"
         android:layout_width="300dp"
         android:layout_height="300dp"
-        android:background="#000"
         android:visibility="gone"
         app:layout_constraintBottom_toTopOf="@id/focusControlLayout"
         app:layout_constraintEnd_toEndOf="parent"

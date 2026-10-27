@@ -32,7 +32,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -59,6 +58,7 @@ import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import android.widget.ScrollView
+import java.nio.ByteBuffer
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -156,7 +156,7 @@ class MainActivity : AppCompatActivity() {
     private var currentCustomColor: Int = Color.RED
 
     private var isMaster = false
-    private var isCameraBoxVisible = false
+    private var isCameraBoxVisible = true
     @Volatile
     private var isStreamingRequested = true
 
@@ -218,9 +218,6 @@ class MainActivity : AppCompatActivity() {
                 remoteImageView.visibility = View.VISIBLE
                 editPhotoButton.visibility = View.VISIBLE
                 recognizeLegoButton.visibility = View.VISIBLE
-                Toast.makeText(this, "Foto caricata con successo", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "Impossibile caricare l'immagine", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -414,12 +411,8 @@ class MainActivity : AppCompatActivity() {
             // Premendo "Diventa Master", attivo la mia fotocamera e la mostro agli slave
             becomeMasterButton.setOnClickListener {
                 setMasterRole(true, broadcast = true)
-                Toast.makeText(this, "Questo dispositivo è ora MASTER (fotocamera attiva)", Toast.LENGTH_SHORT).show()
             }
 
-            // Pulsante fotocamera:
-            // Sugli slave: all'avvio verde e riquadro nascosto. Se premuto diventa rosso e mostra il riquadro.
-            // Sul master: permette di cambiare la lente della fotocamera locale
             switchCameraButton.setOnClickListener {
                 if (isMaster) {
                     showCameraSelectionMenu()
@@ -429,8 +422,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // Pressione prolungata sul pulsante fotocamera:
-            // Sugli slave: permette di richiedere il cambio fotocamera al master
             switchCameraButton.setOnLongClickListener {
                 if (isMaster) {
                     showCameraSelectionMenu()
@@ -469,18 +460,16 @@ class MainActivity : AppCompatActivity() {
 
             recognizeLegoButton.setOnClickListener {
                 if (isMaster) {
-                    takePhotoAndRecognize(null)
-                    Toast.makeText(this, "Scatto e riconoscimento in corso...", Toast.LENGTH_SHORT).show()
+                    isPendingLegoRecognition = true
+                    takeHighResPhoto(null)
                 } else {
+                    isPendingLegoRecognition = true
                     sendControlMessageToMaster("CMD_RECOGNISE_LEGO")
-                    Toast.makeText(this, "Richiesta riconoscimento al Master...", Toast.LENGTH_SHORT).show()
                 }
             }
 
             editPhotoButton.setOnClickListener {
-                if (lastCapturedPhoto == null) {
-                    Toast.makeText(this, "Nessuna foto disponibile da modificare", Toast.LENGTH_SHORT).show()
-                } else {
+                if (lastCapturedPhoto != null) {
                     isEditingLocally = true
                     startDrawingMode()
                     distributePalettesToPeers()
@@ -499,8 +488,6 @@ class MainActivity : AppCompatActivity() {
                 val editedBitmap = drawingView.getCombinedBitmap()
                 if (editedBitmap != null) {
                     saveImage(editedBitmap)
-                } else {
-                    Toast.makeText(this, "Errore salvataggio foto modificata", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -561,13 +548,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (isMaster) {
-            // Master: attivo la fotocamera locale per trasmetterla agli slave
             checkCameraPermission()
             if (broadcast) {
                 broadcastControlMessage("CMD_CLAIM_MASTER:${Build.MODEL.replace(":", "_")}")
             }
         } else {
-            // Slave: fermo la fotocamera locale
             stopCamera()
             if (broadcast) {
                 broadcastControlMessage("CMD_SET_ROLE:SLAVE")
@@ -597,7 +582,6 @@ class MainActivity : AppCompatActivity() {
             roleLabel.text = "Ruolo: SLAVE (Controllo)"
             becomeMasterButton.visibility = View.VISIBLE
 
-            // Solo gli altri (slave) hanno i pulsanti in basso
             bottomActionsBar.visibility = View.VISIBLE
             scanButton.visibility = View.VISIBLE
             loadPhotoButton.visibility = View.VISIBLE
@@ -621,11 +605,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Solo gli altri hanno il riquadro di visione della fotocamera remoto e i pulsanti in basso
         bottomActionsBar.visibility = View.VISIBLE
 
         if (isCameraBoxVisible) {
-            // Premuto: diventa rosso e viene mostrato il riquadro della fotocamera per scattare le foto da remoto
             switchCameraButton.setColorFilter(Color.parseColor("#F44336"))
             cameraContainer.visibility = View.VISIBLE
             remoteImageView.visibility = View.VISIBLE
@@ -635,7 +617,6 @@ class MainActivity : AppCompatActivity() {
 
             sendControlMessageToMaster("CMD_START_STREAM")
         } else {
-            // All'avvio / altrimenti: il pulsante è verde e il riquadro non viene mostrato
             switchCameraButton.setColorFilter(Color.parseColor("#4CAF50"))
             cameraContainer.visibility = View.GONE
             remoteImageView.visibility = View.GONE
@@ -751,7 +732,6 @@ class MainActivity : AppCompatActivity() {
 
                 setOnClickListener {
                     selectColorFromExternal(color)
-                    Toast.makeText(this@MainActivity, "Colore $name selezionato", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -900,12 +880,10 @@ class MainActivity : AppCompatActivity() {
 
         applyCustomShadeButton.setOnClickListener {
             applyColorToDrawing(currentCustomColor, broadcast = true)
-            Toast.makeText(this, "Sfumatura ${formatHexColor(currentCustomColor)} applicata", Toast.LENGTH_SHORT).show()
         }
 
         customShadePreview.setOnClickListener {
             applyColorToDrawing(currentCustomColor, broadcast = true)
-            Toast.makeText(this, "Sfumatura ${formatHexColor(currentCustomColor)} applicata", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1050,7 +1028,6 @@ class MainActivity : AppCompatActivity() {
                     currentLightness = l
                     shadeSliderView.progress = l
                     onCustomColorComponentsChanged(fromUser = true, isFinal = true)
-                    Toast.makeText(this@MainActivity, "Sfumatura $label selezionata", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -1104,7 +1081,6 @@ class MainActivity : AppCompatActivity() {
                     currentHue = hue
                     hueSliderView.progress = currentHue / 360f
                     onCustomColorComponentsChanged(fromUser = true, isFinal = true)
-                    Toast.makeText(this@MainActivity, "Armonia $name selezionata", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -1187,7 +1163,6 @@ class MainActivity : AppCompatActivity() {
 
                 setOnClickListener {
                     applyColorToDrawing(color, broadcast = true)
-                    Toast.makeText(this@MainActivity, "Colore $label selezionato", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -1210,7 +1185,6 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Salva") { _, _ ->
                 val apiKey = input.text.toString().trim()
                 prefs.edit().putString(PREF_REBRICKABLE_API_KEY, apiKey).apply()
-                Toast.makeText(this, "API Key salvata con successo", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Annulla", null)
             .show()
@@ -1263,10 +1237,8 @@ class MainActivity : AppCompatActivity() {
             if (isMaster) {
                 val capture = activeImageCapture
                 if (capture == null) {
-                    Toast.makeText(this, "Fotocamera non pronta per lo scatto", Toast.LENGTH_SHORT).show()
                     return
                 }
-                Toast.makeText(this, "Scatto e riconoscimento Lego in corso...", Toast.LENGTH_SHORT).show()
                 capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
                     override fun onCaptureSuccess(image: ImageProxy) {
                         try {
@@ -1291,7 +1263,6 @@ class MainActivity : AppCompatActivity() {
                 })
             } else {
                 sendControlMessageToMaster("CMD_RECOGNISE_LEGO")
-                Toast.makeText(this, "Invio richiesta riconoscimento al Master...", Toast.LENGTH_SHORT).show()
             }
             return
         }
@@ -1305,10 +1276,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun performLegoRecognitionForPeer(peer: PeerConnection?, bitmap: Bitmap) {
-        if (peer == null) {
-            runOnUiThread { Toast.makeText(this, "Analisi mattoncino Lego con Brickognize...", Toast.LENGTH_SHORT).show() }
-        }
-
         thread {
             try {
                 val stream = ByteArrayOutputStream()
@@ -1367,8 +1334,6 @@ class MainActivity : AppCompatActivity() {
                 if (responseJsonStr == null || successResponseCode != HttpURLConnection.HTTP_OK) {
                     if (peer != null) {
                         sendDataToPeer(peer, 1, "CMD_LEGO_ERROR::Brickognize: Errore endpoint".toByteArray())
-                    } else {
-                        runOnUiThread { Toast.makeText(this, "Brickognize: Errore endpoint", Toast.LENGTH_LONG).show() }
                     }
                     return@thread
                 }
@@ -1378,8 +1343,6 @@ class MainActivity : AppCompatActivity() {
                 if (itemsArray == null || itemsArray.length() == 0) {
                     if (peer != null) {
                         sendDataToPeer(peer, 1, "CMD_LEGO_ERROR::Nessun mattoncino Lego riconosciuto".toByteArray())
-                    } else {
-                        runOnUiThread { Toast.makeText(this, "Nessun mattoncino Lego riconosciuto", Toast.LENGTH_LONG).show() }
                     }
                     return@thread
                 }
@@ -1462,7 +1425,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (peer != null) {
                     val resultMsg = "CMD_LEGO_RESULT::$partNum::$safeName::$safeCat::$safeCatId::$safeYear::$confidencePercent::$rebrickableImgUrl"
-                    sendDataToPeer(peer, 1, resultMsg.toByteArray())
+                    sendLegoResultToPeer(peer, imageBytes, resultMsg)
                 } else {
                     showLegoResultDialog(bitmap, partNum, rebrickablePartName, rebrickableCategory, rebrickableCatId, rebrickableYear, confidencePercent.toString(), rebrickableImgUrl)
                 }
@@ -1471,8 +1434,6 @@ class MainActivity : AppCompatActivity() {
                 Log.e("RemoteCamera", "Errore riconoscimento Lego: ${e.message}", e)
                 if (peer != null) {
                     sendDataToPeer(peer, 1, "CMD_LEGO_ERROR::Errore di elaborazione".toByteArray())
-                } else {
-                    runOnUiThread { Toast.makeText(this, "Errore di connessione durante il riconoscimento", Toast.LENGTH_LONG).show() }
                 }
             }
         }
@@ -1604,6 +1565,24 @@ class MainActivity : AppCompatActivity() {
                     .setTitle("Riconoscimento Lego")
                     .setView(scrollView)
                     .setPositiveButton("OK", null)
+                    .setOnDismissListener {
+                        runOnUiThread {
+                            if (isMaster) {
+                                cameraContainer.visibility = View.VISIBLE
+                                localPreviewView.visibility = View.VISIBLE
+                                remoteImageView.visibility = View.GONE
+                            } else {
+                                if (isCameraBoxVisible) {
+                                    cameraContainer.visibility = View.VISIBLE
+                                    localPreviewView.visibility = View.GONE
+                                    remoteImageView.visibility = View.VISIBLE
+                                } else {
+                                    cameraContainer.visibility = View.GONE
+                                    remoteImageView.visibility = View.GONE
+                                }
+                            }
+                        }
+                    }
                     .show()
             }
         }
@@ -1612,7 +1591,6 @@ class MainActivity : AppCompatActivity() {
     private fun captureRemoteImage() {
         val masterPeer = synchronized(connectedPeers) { connectedPeers.values.find { it.role == "MASTER" } }
         if (masterPeer == null) {
-            Toast.makeText(this, "Nessun Master connesso per scattare la foto", Toast.LENGTH_SHORT).show()
             return
         }
         statusTextView.text = "Richiesta scatto foto remota al Master..."
@@ -1632,13 +1610,11 @@ class MainActivity : AppCompatActivity() {
             fos?.use {
                 bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it)
                 runOnUiThread {
-                    Toast.makeText(this, "Foto salvata ($filename)", Toast.LENGTH_SHORT).show()
                     statusTextView.text = "Foto salvata!"
                 }
             }
         } catch (e: Exception) {
             Log.e("RemoteCamera", "Errore salvataggio: ${e.message}")
-            runOnUiThread { Toast.makeText(this, "Errore durante il salvataggio", Toast.LENGTH_SHORT).show() }
         }
     }
 
@@ -1822,7 +1798,6 @@ class MainActivity : AppCompatActivity() {
                         editPhotoButton.visibility = View.VISIBLE
                         recognizeLegoButton.visibility = View.VISIBLE
                         loadPhotoButton.visibility = View.VISIBLE
-                        Toast.makeText(this@MainActivity, "Foto scattata e mostrata con successo!", Toast.LENGTH_SHORT).show()
 
                         if (isPendingLegoRecognition) {
                             isPendingLegoRecognition = false
@@ -1833,10 +1808,18 @@ class MainActivity : AppCompatActivity() {
                     // Invia la foto ad alta risoluzione allo slave richiedente (o a tutti gli slave)
                     if (requesterPeer != null) {
                         sendDataToPeer(requesterPeer, 3, photoBytes)
+                        if (isPendingLegoRecognition) {
+                            isPendingLegoRecognition = false
+                            performLegoRecognitionForPeer(requesterPeer, scaledBitmap)
+                        }
                     } else {
                         val slaves = synchronized(connectedPeers) { connectedPeers.values.filter { it.role == "SLAVE" } }
                         for (slave in slaves) {
                             sendDataToPeer(slave, 3, photoBytes)
+                        }
+                        if (isPendingLegoRecognition) {
+                            isPendingLegoRecognition = false
+                            performLegoRecognitionForPeer(null, scaledBitmap)
                         }
                     }
 
@@ -1978,7 +1961,6 @@ class MainActivity : AppCompatActivity() {
                                 cameraContainer.visibility = View.VISIBLE
                                 editPhotoButton.visibility = View.VISIBLE
                                 recognizeLegoButton.visibility = View.VISIBLE
-                                Toast.makeText(this@MainActivity, "Foto scattata e ricevuta dall'altro smartphone!", Toast.LENGTH_SHORT).show()
 
                                 if (isPendingLegoRecognition) {
                                     isPendingLegoRecognition = false
@@ -1986,6 +1968,29 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                         }
+                    }
+                    4 -> {
+                        // Risultato riconoscimento Lego con foto temporanea in memoria (senza salvataggio su disco)
+                        val buffer = ByteBuffer.wrap(payload)
+                        val photoLen = buffer.int
+                        val photoBytes = ByteArray(photoLen)
+                        buffer.get(photoBytes)
+                        val tempBitmap = BitmapFactory.decodeByteArray(photoBytes, 0, photoBytes.size)
+
+                        val strBytes = ByteArray(buffer.remaining())
+                        buffer.get(strBytes)
+                        val message = String(strBytes, Charsets.UTF_8)
+
+                        val parts = message.split("::")
+                        val partNum = parts.getOrNull(1) ?: ""
+                        val partName = parts.getOrNull(2) ?: ""
+                        val category = parts.getOrNull(3) ?: ""
+                        val catId = parts.getOrNull(4) ?: ""
+                        val year = parts.getOrNull(5) ?: ""
+                        val confidence = parts.getOrNull(6) ?: "0"
+                        val imgUrl = parts.getOrNull(7) ?: ""
+
+                        showLegoResultDialog(tempBitmap, partNum, partName, category, catId, year, confidence, imgUrl)
                     }
                 }
             }
@@ -2027,27 +2032,36 @@ class MainActivity : AppCompatActivity() {
                 if (localIp < peer.remoteIp) {
                     runOnUiThread {
                         setMasterRole(false, broadcast = false)
-                        Toast.makeText(this@MainActivity, "Conflitto Master: ceduto a $remoteName", Toast.LENGTH_SHORT).show()
                     }
                 } else {
                     sendDataToPeer(peer, 1, "CMD_CLAIM_MASTER:${Build.MODEL.replace(":", "_")}".toByteArray())
+                }
+            } else if (remoteRole == "MASTER") {
+                runOnUiThread {
+                    updateRoleUI()
+                    updateConnectionStatusUI()
+                    if (isCameraBoxVisible) {
+                        sendControlMessageToMaster("CMD_START_STREAM")
+                    }
                 }
             }
 
             runOnUiThread { updateConnectionStatusUI() }
 
         } else if (message.startsWith("CMD_CLAIM_MASTER") || message.startsWith("CMD_SET_ROLE:MASTER")) {
-            val parts = message.split(":")
-            val senderName = parts.getOrNull(1) ?: peer.deviceName.ifEmpty { peer.remoteIp }
             peer.role = "MASTER"
 
             // Uno solo diventa master: se ero master, divento slave
             runOnUiThread {
                 if (isMaster) {
                     setMasterRole(false, broadcast = false)
-                    Toast.makeText(this, "$senderName è ora MASTER (fotocamera). Questo dispositivo è SLAVE.", Toast.LENGTH_SHORT).show()
+                } else {
+                    updateRoleUI()
                 }
                 updateConnectionStatusUI()
+                if (isCameraBoxVisible) {
+                    sendControlMessageToMaster("CMD_START_STREAM")
+                }
             }
 
         } else if (message == "CMD_SET_ROLE:SLAVE") {
@@ -2118,13 +2132,10 @@ class MainActivity : AppCompatActivity() {
             val confidence = parts.getOrNull(6) ?: "0"
             val imgUrl = parts.getOrNull(7) ?: ""
 
-            showLegoResultDialog(null, partNum, partName, category, catId, year, confidence, imgUrl)
+            showLegoResultDialog(lastCapturedPhoto, partNum, partName, category, catId, year, confidence, imgUrl)
 
         } else if (message.startsWith("CMD_LEGO_ERROR::")) {
             val errorMsg = message.substringAfter("CMD_LEGO_ERROR::")
-            runOnUiThread {
-                Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
-            }
         } else if (message == "CMD_START_STREAM") {
             if (isMaster) {
                 isStreamingRequested = true
@@ -2169,9 +2180,6 @@ class MainActivity : AppCompatActivity() {
 
         } else if (message.startsWith("CMD_CAMERA_CHANGED:")) {
             val info = message.substringAfter("CMD_CAMERA_CHANGED:")
-            runOnUiThread {
-                Toast.makeText(this, "Fotocamera Master cambiata (ID: $info)", Toast.LENGTH_SHORT).show()
-            }
 
         } else if (message.startsWith("CMD_START_DRAWING")) {
             runOnUiThread {
@@ -2183,7 +2191,6 @@ class MainActivity : AppCompatActivity() {
 
                 val config = if (message.contains(":")) message.substringAfter("CMD_START_DRAWING:") else "1,2,3"
                 parseAndApplyPaletteAssignment(config)
-                Toast.makeText(this, "Modifica avviata: palette assegnata a questo dispositivo", Toast.LENGTH_SHORT).show()
             }
 
         } else if (message.startsWith("CMD_SET_PALETTE_ASSIGNMENT:")) {
@@ -2205,7 +2212,6 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (assignedPaletteIds.contains(takenPalette)) {
                     applyPaletteVisibility(setOf(givenPalette))
-                    Toast.makeText(this@MainActivity, "Scambio palette: ora visualizzi la Palette $givenPalette", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -2217,7 +2223,6 @@ class MainActivity : AppCompatActivity() {
 
         } else if (message == "CMD_CLOSE_APP") {
             runOnUiThread {
-                Toast.makeText(this@MainActivity, "Chiusura app sincronizzata da dispositivo remoto", Toast.LENGTH_SHORT).show()
                 cleanupAndExit(broadcast = false)
             }
 
@@ -2226,7 +2231,6 @@ class MainActivity : AppCompatActivity() {
             val colorInt = colorStr.toIntOrNull() ?: Color.RED
             runOnUiThread {
                 syncColorFromRemote(colorInt)
-                Toast.makeText(this, "Colore pennello aggiornato da remoto", Toast.LENGTH_SHORT).show()
             }
 
         } else if (message.startsWith("CMD_SET_DRAW_SIZE:")) {
@@ -2251,6 +2255,30 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 Log.e("RemoteCamera", "Errore invio a ${peer.remoteIp}: ${e.message}")
+                disconnectPeer(peer.remoteIp)
+            }
+        }
+    }
+
+    private fun sendLegoResultToPeer(peer: PeerConnection, photoBytes: ByteArray, resultString: String) {
+        networkExecutor.execute {
+            try {
+                val resultBytes = resultString.toByteArray(Charsets.UTF_8)
+                val totalSize = 4 + photoBytes.size + resultBytes.size
+                val buffer = ByteBuffer.allocate(totalSize)
+                buffer.putInt(photoBytes.size)
+                buffer.put(photoBytes)
+                buffer.put(resultBytes)
+                val payload = buffer.array()
+
+                synchronized(peer.outputStream) {
+                    peer.outputStream.writeByte(4)
+                    peer.outputStream.writeInt(payload.size)
+                    peer.outputStream.write(payload)
+                    peer.outputStream.flush()
+                }
+            } catch (e: Exception) {
+                Log.e("RemoteCamera", "Errore invio risultato Lego a ${peer.remoteIp}: ${e.message}")
                 disconnectPeer(peer.remoteIp)
             }
         }
@@ -2314,7 +2342,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun showRemoteCameraSelectionMenu(listString: String) {
         if (listString == "Nessuna camera" || listString == "Errore") {
-            Toast.makeText(this, "Nessuna telecamera trovata sul Master", Toast.LENGTH_SHORT).show()
             return
         }
         val itemsData = listString.split(";")

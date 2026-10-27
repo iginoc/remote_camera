@@ -114,6 +114,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var saturationSliderView: ColorSliderView
     private lateinit var generatedShadesContainer: LinearLayout
     private lateinit var colorHarmoniesContainer: LinearLayout
+    private lateinit var imageEditingShadesContainer: LinearLayout
 
     private lateinit var paletteBadgeTextView: TextView
     private lateinit var paletteBadgeDescTextView: TextView
@@ -296,6 +297,7 @@ class MainActivity : AppCompatActivity() {
             saturationSliderView = findViewById(R.id.saturationSliderView)
             generatedShadesContainer = findViewById(R.id.generatedShadesContainer)
             colorHarmoniesContainer = findViewById(R.id.colorHarmoniesContainer)
+            imageEditingShadesContainer = findViewById(R.id.imageEditingShadesContainer)
 
             brushSizeSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -838,6 +840,7 @@ class MainActivity : AppCompatActivity() {
         if (isFinal) {
             generateShadeSwatches()
             generateHarmonySwatches()
+            populateImageEditingShades()
         }
 
         if (fromUser) {
@@ -1039,6 +1042,79 @@ class MainActivity : AppCompatActivity() {
             drawingView.setPhoto(photo)
             drawingView.setStrokeColor(currentCustomColor)
             drawingColorIndicator.setBackgroundColor(currentCustomColor)
+            populateImageEditingShades()
+        }
+    }
+
+    private fun populateImageEditingShades() {
+        if (!::imageEditingShadesContainer.isInitialized) return
+        imageEditingShadesContainer.removeAllViews()
+        val density = resources.displayMetrics.density
+
+        val colorItems = mutableListOf<Pair<String, Int>>()
+
+        val lightnessLevels = listOf(
+            0.12f to "Ombra",
+            0.25f to "Scuro",
+            0.38f to "Medio",
+            0.50f to "Puro",
+            0.65f to "Chiaro",
+            0.78f to "Pastello",
+            0.88f to "Chiarissimo",
+            0.96f to "Luce"
+        )
+        for ((l, label) in lightnessLevels) {
+            val shadeColor = ColorUtils.HSLToColor(floatArrayOf(currentHue, currentSaturation, l))
+            colorItems.add(label to shadeColor)
+        }
+
+        val harmonies = listOf(
+            "Base" to currentHue,
+            "Comp" to ((currentHue + 180f) % 360f),
+            "Ana+" to ((currentHue + 30f) % 360f),
+            "Ana-" to ((currentHue + 330f) % 360f),
+            "Tri1" to ((currentHue + 120f) % 360f),
+            "Tri2" to ((currentHue + 240f) % 360f)
+        )
+        for ((name, hue) in harmonies) {
+            val harmonyColor = ColorUtils.HSLToColor(floatArrayOf(hue, currentSaturation, currentLightness))
+            colorItems.add(name to harmonyColor)
+        }
+
+        for ((label, color) in colorItems) {
+            val itemLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding((6 * density).toInt(), (4 * density).toInt(), (6 * density).toInt(), (4 * density).toInt())
+
+                val circleView = View(this@MainActivity).apply {
+                    val size = (38 * density).toInt()
+                    layoutParams = LinearLayout.LayoutParams(size, size)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(color)
+                        setStroke((2 * density).toInt(), Color.parseColor("#FFFFFF"))
+                    }
+                }
+
+                val textView = TextView(this@MainActivity).apply {
+                    text = label
+                    setTextColor(Color.parseColor("#CCCCCC"))
+                    textSize = 9f
+                    gravity = Gravity.CENTER
+                    setPadding(0, (2 * density).toInt(), 0, 0)
+                }
+
+                addView(circleView)
+                addView(textView)
+
+                setOnClickListener {
+                    applyColorToDrawing(color, broadcast = true)
+                    Toast.makeText(this@MainActivity, "Colore $label selezionato", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            imageEditingShadesContainer.addView(itemLayout)
         }
     }
 
@@ -1225,8 +1301,21 @@ class MainActivity : AppCompatActivity() {
                     rotatedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
                     val photoBytes = stream.toByteArray()
 
-                    // Salva la foto locale sul Master
+                    // Salva la foto locale sul Master e mostrala (senza riciclarla perché usata da lastCapturedPhoto / remoteImageView)
                     saveImage(rotatedBitmap)
+                    lastCapturedPhoto = rotatedBitmap
+
+                    runOnUiThread {
+                        remoteImageView.setImageBitmap(rotatedBitmap)
+                        remoteImageView.visibility = View.VISIBLE
+                        cameraContainer.visibility = View.VISIBLE
+                        localPreviewView.visibility = View.GONE
+                        bottomActionsBar.visibility = View.VISIBLE
+                        scanButton.visibility = View.VISIBLE
+                        editPhotoButton.visibility = View.VISIBLE
+                        loadPhotoButton.visibility = View.VISIBLE
+                        Toast.makeText(this@MainActivity, "Foto scattata e mostrata con successo!", Toast.LENGTH_SHORT).show()
+                    }
 
                     // Invia la foto ad alta risoluzione allo slave richiedente (o a tutti gli slave)
                     if (requesterPeer != null) {
@@ -1240,7 +1329,6 @@ class MainActivity : AppCompatActivity() {
 
                     image.close()
                     bitmap.recycle()
-                    if (rotatedBitmap !== bitmap) rotatedBitmap.recycle()
                 } catch (e: Exception) {
                     Log.e("RemoteCamera", "Errore elaborazione foto scattata: ${e.message}")
                 }
@@ -1366,17 +1454,17 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                     3 -> {
-                        // Foto ad alta risoluzione ricevuta dal Master sullo Slave
-                        if (!isMaster) {
-                            val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size)
-                            if (bitmap != null) {
-                                lastCapturedPhoto = bitmap
-                                saveImage(bitmap)
-                                runOnUiThread {
-                                    remoteImageView.setImageBitmap(bitmap)
-                                    editPhotoButton.visibility = View.VISIBLE
-                                    Toast.makeText(this@MainActivity, "Foto scattata dal Master ricevuta!", Toast.LENGTH_SHORT).show()
-                                }
+                        // Foto ad alta risoluzione ricevuta dall'altro smartphone
+                        val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size)
+                        if (bitmap != null) {
+                            lastCapturedPhoto = bitmap
+                            saveImage(bitmap)
+                            runOnUiThread {
+                                remoteImageView.setImageBitmap(bitmap)
+                                remoteImageView.visibility = View.VISIBLE
+                                cameraContainer.visibility = View.VISIBLE
+                                editPhotoButton.visibility = View.VISIBLE
+                                Toast.makeText(this@MainActivity, "Foto scattata e ricevuta dall'altro smartphone!", Toast.LENGTH_SHORT).show()
                             }
                         }
                     }

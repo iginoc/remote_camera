@@ -441,6 +441,16 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            editPhotoButton.setOnClickListener {
+                if (lastCapturedPhoto == null) {
+                    Toast.makeText(this, "Nessuna foto disponibile da modificare", Toast.LENGTH_SHORT).show()
+                } else {
+                    isEditingLocally = true
+                    startDrawingMode()
+                    distributePalettesToPeers()
+                }
+            }
+
             loadPhotoButton.setOnClickListener {
                 pickImageLauncher.launch("image/*")
             }
@@ -541,9 +551,9 @@ class MainActivity : AppCompatActivity() {
             localPreviewView.visibility = View.VISIBLE
             bottomActionsBar.visibility = View.VISIBLE
             captureButton.visibility = View.VISIBLE
-            editPhotoButton.visibility = View.GONE
+            editPhotoButton.visibility = if (lastCapturedPhoto != null) View.VISIBLE else View.GONE
             recognizeLegoButton.visibility = View.VISIBLE
-            loadPhotoButton.visibility = View.GONE
+            loadPhotoButton.visibility = View.VISIBLE
             focusControlLayout.visibility = View.VISIBLE
 
             switchCameraButton.setColorFilter(Color.parseColor("#4CAF50"))

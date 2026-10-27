@@ -148,7 +148,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:gravity="center_vertical"
+            android:layout_marginBottom="8dp">
 
             <TextView
                 android:id="@+id/resolutionLabelTextView"
@@ -166,6 +167,30 @@
                 android:layout_weight="1"
                 android:max="2"
                 android:progress="1" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/zoomLabelTextView"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Zoom: 1.0x"
+                android:textSize="12sp"
+                android:textColor="#FFFFFF"
+                android:layout_marginEnd="8dp" />
+
+            <SeekBar
+                android:id="@+id/zoomSeekBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="100"
+                android:progress="0" />
         </LinearLayout>
     </LinearLayout>
 

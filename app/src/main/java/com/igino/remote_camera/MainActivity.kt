@@ -72,6 +72,7 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Collections
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
@@ -100,6 +101,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var focusSeekBar: SeekBar
     private lateinit var resolutionSeekBar: SeekBar
     private lateinit var resolutionLabelTextView: TextView
+    private lateinit var zoomSeekBar: SeekBar
+    private lateinit var zoomLabelTextView: TextView
     private var currentResolutionLevel = 1
 
     private lateinit var fullScreenDrawingContainer: View
@@ -289,6 +292,8 @@ class MainActivity : AppCompatActivity() {
             focusSeekBar = findViewById(R.id.focusSeekBar)
             resolutionSeekBar = findViewById(R.id.resolutionSeekBar)
             resolutionLabelTextView = findViewById(R.id.resolutionLabelTextView)
+            zoomSeekBar = findViewById(R.id.zoomSeekBar)
+            zoomLabelTextView = findViewById(R.id.zoomLabelTextView)
 
             resolutionSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -301,6 +306,27 @@ class MainActivity : AppCompatActivity() {
                     resolutionLabelTextView.text = resText
                     if (fromUser) {
                         broadcastControlMessage("CMD_SET_RESOLUTION:$progress")
+                    }
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+
+            zoomSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val cam = camera
+                    if (cam != null) {
+                        val zoomState = cam.cameraInfo.zoomState.value
+                        if (zoomState != null) {
+                            val min = zoomState.minZoomRatio
+                            val max = zoomState.maxZoomRatio
+                            val ratio = min + (progress / 100f) * (max - min)
+                            cam.cameraControl.setZoomRatio(ratio)
+                            zoomLabelTextView.text = String.format(Locale.getDefault(), "Zoom: %.1fx", ratio)
+                        }
+                    }
+                    if (fromUser) {
+                        broadcastControlMessage("CMD_SET_ZOOM:$progress")
                     }
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -1986,6 +2012,25 @@ class MainActivity : AppCompatActivity() {
             if (isMaster) {
                 val level = message.substringAfter("CMD_SET_RESOLUTION:").toIntOrNull() ?: 1
                 currentResolutionLevel = level
+            }
+
+        } else if (message.startsWith("CMD_SET_ZOOM:")) {
+            if (isMaster) {
+                val progress = message.substringAfter("CMD_SET_ZOOM:").toIntOrNull() ?: 0
+                runOnUiThread {
+                    zoomSeekBar.progress = progress
+                    val cam = camera
+                    if (cam != null) {
+                        val zoomState = cam.cameraInfo.zoomState.value
+                        if (zoomState != null) {
+                            val min = zoomState.minZoomRatio
+                            val max = zoomState.maxZoomRatio
+                            val ratio = min + (progress / 100f) * (max - min)
+                            cam.cameraControl.setZoomRatio(ratio)
+                            zoomLabelTextView.text = String.format(Locale.getDefault(), "Zoom: %.1fx", ratio)
+                        }
+                    }
+                }
             }
 
         } else if (message == "CMD_RECOGNISE_LEGO") {

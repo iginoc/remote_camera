@@ -3,6 +3,7 @@ package com.igino.remote_camera
 import android.Manifest
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -54,9 +55,16 @@ import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import android.widget.ScrollView
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.OutputStreamWriter
+import java.io.PrintWriter
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONArray
+import org.json.JSONObject
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -77,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var becomeMasterButton: Button
     private lateinit var scanButton: ImageButton
     private lateinit var editPhotoButton: ImageButton
+    private lateinit var recognizeLegoButton: ImageButton
     private lateinit var loadPhotoButton: ImageButton
     private lateinit var captureButton: ImageButton
     private lateinit var switchCameraButton: ImageButton
@@ -89,6 +98,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var focusControlLayout: View
     private lateinit var autofocusSwitch: SwitchCompat
     private lateinit var focusSeekBar: SeekBar
+    private lateinit var resolutionSeekBar: SeekBar
+    private lateinit var resolutionLabelTextView: TextView
+    private var currentResolutionLevel = 1
 
     private lateinit var fullScreenDrawingContainer: View
     private lateinit var drawingView: DrawingView
@@ -128,6 +140,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var paletteShadesContainer: LinearLayout
 
     private var isEditingLocally = false
+    private var isPendingLegoRecognition = false
     private var assignedPaletteIds: Set<Int> = setOf(1, 2, 3)
 
     private var currentHue: Float = 0f
@@ -196,6 +209,7 @@ class MainActivity : AppCompatActivity() {
                 remoteImageView.setImageBitmap(bitmap)
                 remoteImageView.visibility = View.VISIBLE
                 editPhotoButton.visibility = View.VISIBLE
+                recognizeLegoButton.visibility = View.VISIBLE
                 Toast.makeText(this, "Foto caricata con successo", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "Impossibile caricare l'immagine", Toast.LENGTH_SHORT).show()
@@ -260,6 +274,7 @@ class MainActivity : AppCompatActivity() {
             becomeMasterButton = findViewById(R.id.becomeMasterButton)
             scanButton = findViewById(R.id.scanButton)
             editPhotoButton = findViewById(R.id.editPhotoButton)
+            recognizeLegoButton = findViewById(R.id.recognizeLegoButton)
             loadPhotoButton = findViewById(R.id.loadPhotoButton)
             captureButton = findViewById(R.id.captureButton)
             switchCameraButton = findViewById(R.id.switchCameraButton)
@@ -272,6 +287,25 @@ class MainActivity : AppCompatActivity() {
             focusControlLayout = findViewById(R.id.focusControlLayout)
             autofocusSwitch = findViewById(R.id.autofocusSwitch)
             focusSeekBar = findViewById(R.id.focusSeekBar)
+            resolutionSeekBar = findViewById(R.id.resolutionSeekBar)
+            resolutionLabelTextView = findViewById(R.id.resolutionLabelTextView)
+
+            resolutionSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    currentResolutionLevel = progress
+                    val resText = when (progress) {
+                        0 -> "Risoluzione: Bassa (HD)"
+                        1 -> "Risoluzione: Media (Full HD)"
+                        else -> "Risoluzione: Alta (Massima)"
+                    }
+                    resolutionLabelTextView.text = resText
+                    if (fromUser) {
+                        broadcastControlMessage("CMD_SET_RESOLUTION:$progress")
+                    }
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
 
             fullScreenDrawingContainer = findViewById(R.id.fullScreenDrawingContainer)
             drawingView = findViewById(R.id.drawingView)
@@ -397,24 +431,19 @@ class MainActivity : AppCompatActivity() {
                 startManualScan()
             }
 
-            drawingColorIndicator.setOnClickListener {
-                slavePaletteContainer.bringToFront()
-                slavePaletteContainer.visibility = View.VISIBLE
-                backToDrawingButton.visibility = View.VISIBLE
-                applyPaletteVisibility(setOf(1, 2, 3))
-            }
-
-            backToDrawingButton.setOnClickListener {
-                slavePaletteContainer.visibility = View.GONE
-            }
-
-            editPhotoButton.setOnClickListener {
-                if (lastCapturedPhoto == null) {
-                    Toast.makeText(this, "Nessuna foto disponibile da modificare", Toast.LENGTH_SHORT).show()
+            recognizeLegoButton.setOnClickListener {
+                if (lastCapturedPhoto != null) {
+                    recognizeLegoPart()
                 } else {
-                    isEditingLocally = true
-                    startDrawingMode()
-                    distributePalettesToPeers()
+                    if (isMaster) {
+                        isPendingLegoRecognition = true
+                        takeHighResPhoto(null)
+                        Toast.makeText(this, "Scatto e riconoscimento in corso...", Toast.LENGTH_SHORT).show()
+                    } else {
+                        isPendingLegoRecognition = true
+                        sendControlMessageToMaster("CMD_TAKE_PHOTO")
+                        Toast.makeText(this, "Richiesta scatto al Master per il riconoscimento...", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
 
@@ -530,6 +559,8 @@ class MainActivity : AppCompatActivity() {
             scanButton.visibility = View.VISIBLE
             loadPhotoButton.visibility = View.VISIBLE
             editPhotoButton.visibility = if (lastCapturedPhoto != null) View.VISIBLE else View.GONE
+            recognizeLegoButton.visibility = View.VISIBLE
+            recognizeLegoButton.visibility = if (lastCapturedPhoto != null) View.VISIBLE else View.GONE
 
             updateCameraBoxUI()
         }
@@ -1125,6 +1156,353 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun recognizeLegoPart() {
+        val bitmap = lastCapturedPhoto
+        if (bitmap == null) {
+            if (isMaster) {
+                val capture = activeImageCapture
+                if (capture == null) {
+                    Toast.makeText(this, "Fotocamera non pronta per lo scatto", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                Toast.makeText(this, "Scatto e riconoscimento Lego in corso...", Toast.LENGTH_SHORT).show()
+                capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+                    override fun onCaptureSuccess(image: ImageProxy) {
+                        try {
+                            val rawBmp = image.toBitmap()
+                            val rotation = image.imageInfo.rotationDegrees
+                            val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+                            val rotatedBmp = Bitmap.createBitmap(rawBmp, 0, 0, rawBmp.width, rawBmp.height, matrix, true)
+                            val scaledBmp = when (currentResolutionLevel) {
+                                0 -> scaleBitmapMaxDimension(rotatedBmp, 1280)
+                                1 -> scaleBitmapMaxDimension(rotatedBmp, 1920)
+                                else -> rotatedBmp
+                            }
+                            performLegoRecognitionForPeer(null, scaledBmp)
+                            image.close()
+                            rawBmp.recycle()
+                            if (rotatedBmp !== rawBmp) rotatedBmp.recycle()
+                        } catch (e: Exception) {
+                            Log.e("RemoteCamera", "Errore scatto per riconoscimento: ${e.message}")
+                        }
+                    }
+                    override fun onError(exception: ImageCaptureException) {}
+                })
+            } else {
+                sendControlMessageToMaster("CMD_RECOGNISE_LEGO")
+                Toast.makeText(this, "Invio richiesta riconoscimento al Master...", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+
+        val scaledBmp = when (currentResolutionLevel) {
+            0 -> scaleBitmapMaxDimension(bitmap, 1280)
+            1 -> scaleBitmapMaxDimension(bitmap, 1920)
+            else -> bitmap
+        }
+        performLegoRecognitionForPeer(null, scaledBmp)
+    }
+
+    private fun performLegoRecognitionForPeer(peer: PeerConnection?, bitmap: Bitmap) {
+        if (peer == null) {
+            runOnUiThread { Toast.makeText(this, "Analisi mattoncino Lego con Brickognize...", Toast.LENGTH_SHORT).show() }
+        }
+
+        thread {
+            try {
+                val stream = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                val imageBytes = stream.toByteArray()
+
+                val endpoints = listOf(
+                    "https://api.brickognize.com/predict/",
+                    "https://api.brickognize.com/v2/predict/",
+                    "https://api.brickognize.com/v3/predict/"
+                )
+
+                var responseJsonStr: String? = null
+                var successResponseCode = -1
+
+                for (endpointUrl in endpoints) {
+                    try {
+                        val boundary = "Boundary_" + System.currentTimeMillis()
+                        val url = URL(endpointUrl)
+                        val connection = (url.openConnection() as HttpURLConnection).apply {
+                            requestMethod = "POST"
+                            doOutput = true
+                            setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+                            setRequestProperty("Accept", "application/json")
+                            connectTimeout = 10000
+                            readTimeout = 10000
+                        }
+
+                        connection.outputStream.use { outputStream ->
+                            val writer = PrintWriter(OutputStreamWriter(outputStream, "UTF-8"), true)
+                            writer.append("--$boundary\r\n")
+                            writer.append("Content-Disposition: form-data; name=\"query_image\"; filename=\"lego.jpg\"\r\n")
+                            writer.append("Content-Type: image/jpeg\r\n\r\n")
+                            writer.flush()
+
+                            outputStream.write(imageBytes)
+                            outputStream.flush()
+
+                            writer.append("\r\n--$boundary--\r\n")
+                            writer.flush()
+                        }
+
+                        successResponseCode = connection.responseCode
+                        if (successResponseCode == HttpURLConnection.HTTP_OK) {
+                            responseJsonStr = connection.inputStream.bufferedReader().use { it.readText() }
+                            connection.disconnect()
+                            break
+                        } else {
+                            connection.disconnect()
+                        }
+                    } catch (e: Exception) {
+                        Log.d("RemoteCamera", "Tentativo endpoint $endpointUrl fallito: ${e.message}")
+                    }
+                }
+
+                if (responseJsonStr == null || successResponseCode != HttpURLConnection.HTTP_OK) {
+                    if (peer != null) {
+                        sendDataToPeer(peer, 1, "CMD_LEGO_ERROR::Brickognize: Errore endpoint".toByteArray())
+                    } else {
+                        runOnUiThread { Toast.makeText(this, "Brickognize: Errore endpoint", Toast.LENGTH_LONG).show() }
+                    }
+                    return@thread
+                }
+
+                val jsonRoot = JSONObject(responseJsonStr)
+                val itemsArray = jsonRoot.optJSONArray("items")
+                if (itemsArray == null || itemsArray.length() == 0) {
+                    if (peer != null) {
+                        sendDataToPeer(peer, 1, "CMD_LEGO_ERROR::Nessun mattoncino Lego riconosciuto".toByteArray())
+                    } else {
+                        runOnUiThread { Toast.makeText(this, "Nessun mattoncino Lego riconosciuto", Toast.LENGTH_LONG).show() }
+                    }
+                    return@thread
+                }
+
+                val bestItem = itemsArray.getJSONObject(0)
+                val brickId = bestItem.optString("id", "")
+                val brickName = bestItem.optString("name", "Sconosciuto")
+                val score = bestItem.optDouble("score", 0.0)
+
+                val externalIds = bestItem.optJSONObject("external_ids")
+                val rebrickableIds = externalIds?.optJSONArray("rebrickable")
+                val partNum = if (rebrickableIds != null && rebrickableIds.length() > 0) {
+                    rebrickableIds.getString(0)
+                } else {
+                    brickId
+                }
+
+                var rebrickablePartName = brickName
+                var rebrickableYear = ""
+                var rebrickableCategory = ""
+                var rebrickableCatId = ""
+                var rebrickableImgUrl = ""
+
+                if (partNum.isNotEmpty()) {
+                    try {
+                        val rebUrl = URL("https://rebrickable.com/api/v3/lego/parts/$partNum/")
+                        val rebConn = (rebUrl.openConnection() as HttpURLConnection).apply {
+                            requestMethod = "GET"
+                            setRequestProperty("Authorization", "key b63b7096a3cdea9e37191e848c99a9ad")
+                            setRequestProperty("Accept", "application/json")
+                            connectTimeout = 10000
+                            readTimeout = 10000
+                        }
+
+                        if (rebConn.responseCode == HttpURLConnection.HTTP_OK) {
+                            val rebJsonStr = rebConn.inputStream.bufferedReader().use { it.readText() }
+                            val rebObj = JSONObject(rebJsonStr)
+                            rebrickablePartName = rebObj.optString("name", brickName)
+                            rebrickableYear = rebObj.optString("year_from", "")
+                            rebrickableCatId = rebObj.optString("part_cat_id", "")
+                            rebrickableImgUrl = rebObj.optString("part_img_url", "")
+
+                            if (rebrickableCatId.isNotEmpty()) {
+                                try {
+                                    val catUrl = URL("https://rebrickable.com/api/v3/lego/part_categories/$rebrickableCatId/")
+                                    val catConn = (catUrl.openConnection() as HttpURLConnection).apply {
+                                        requestMethod = "GET"
+                                        setRequestProperty("Authorization", "key b63b7096a3cdea9e37191e848c99a9ad")
+                                        setRequestProperty("Accept", "application/json")
+                                        connectTimeout = 5000
+                                        readTimeout = 5000
+                                    }
+                                    if (catConn.responseCode == HttpURLConnection.HTTP_OK) {
+                                        val catJsonStr = catConn.inputStream.bufferedReader().use { it.readText() }
+                                        val catObj = JSONObject(catJsonStr)
+                                        rebrickableCategory = catObj.optString("name", "")
+                                    }
+                                    catConn.disconnect()
+                                } catch (e: Exception) {
+                                    Log.e("RemoteCamera", "Errore Rebrickable Category API: ${e.message}")
+                                }
+                            }
+                        }
+                        rebConn.disconnect()
+                    } catch (e: Exception) {
+                        Log.e("RemoteCamera", "Errore Rebrickable API: ${e.message}")
+                    }
+                }
+
+                val confidencePercent = (score * 100).toInt()
+                val safeName = rebrickablePartName.replace("::", "_")
+                val safeCat = rebrickableCategory.replace("::", "_")
+                val safeCatId = rebrickableCatId.replace("::", "_")
+                val safeYear = rebrickableYear.replace("::", "_")
+
+                if (peer != null) {
+                    val resultMsg = "CMD_LEGO_RESULT::$partNum::$safeName::$safeCat::$safeCatId::$safeYear::$confidencePercent::$rebrickableImgUrl"
+                    sendDataToPeer(peer, 1, resultMsg.toByteArray())
+                } else {
+                    showLegoResultDialog(bitmap, partNum, rebrickablePartName, rebrickableCategory, rebrickableCatId, rebrickableYear, confidencePercent.toString(), rebrickableImgUrl)
+                }
+
+            } catch (e: Exception) {
+                Log.e("RemoteCamera", "Errore riconoscimento Lego: ${e.message}", e)
+                if (peer != null) {
+                    sendDataToPeer(peer, 1, "CMD_LEGO_ERROR::Errore di elaborazione".toByteArray())
+                } else {
+                    runOnUiThread { Toast.makeText(this, "Errore di connessione durante il riconoscimento", Toast.LENGTH_LONG).show() }
+                }
+            }
+        }
+    }
+
+    private fun showLegoResultDialog(capturedBitmap: Bitmap?, partNum: String, partName: String, category: String, catId: String, year: String, confidence: String, imgUrl: String) {
+        thread {
+            var dbBitmap: Bitmap? = null
+            if (imgUrl.isNotEmpty()) {
+                try {
+                    val imgConn = URL(imgUrl).openConnection() as HttpURLConnection
+                    imgConn.connectTimeout = 5000
+                    imgConn.readTimeout = 5000
+                    if (imgConn.responseCode == HttpURLConnection.HTTP_OK) {
+                        dbBitmap = BitmapFactory.decodeStream(imgConn.inputStream)
+                    }
+                    imgConn.disconnect()
+                } catch (e: Exception) {
+                    Log.e("RemoteCamera", "Errore download immagine Rebrickable: ${e.message}")
+                }
+            }
+
+            val resultMessage = buildString {
+                append("Nome: $partName\n")
+                append("Codice Parte: $partNum\n")
+                if (category.isNotEmpty()) append("Categoria: $category\n")
+                if (catId.isNotEmpty()) append("ID Categoria (part_cat_id): $catId\n")
+                if (year.isNotEmpty()) append("Anno: $year\n")
+                append("Affidabilità: $confidence%")
+            }
+
+            runOnUiThread {
+                val density = resources.displayMetrics.density
+                val dialogLayout = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    setBackgroundColor(Color.parseColor("#1E1E1E"))
+                }
+
+                val imagesLayout = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        (150 * density).toInt()
+                    ).apply {
+                        setMargins(0, 0, 0, (12 * density).toInt())
+                    }
+                }
+
+                if (capturedBitmap != null) {
+                    val capturedImageView = ImageView(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                            setMargins(4, 4, 4, 4)
+                        }
+                        setImageBitmap(capturedBitmap)
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                    }
+                    imagesLayout.addView(capturedImageView)
+                }
+
+                val dbImageView = ImageView(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, if (capturedBitmap != null) 1f else 2f).apply {
+                        setMargins(4, 4, 4, 4)
+                    }
+                    if (dbBitmap != null) {
+                        setImageBitmap(dbBitmap)
+                    } else {
+                        setBackgroundColor(Color.parseColor("#333333"))
+                    }
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                imagesLayout.addView(dbImageView)
+                dialogLayout.addView(imagesLayout)
+
+                val labelsLayout = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        setMargins(0, 0, 0, (12 * density).toInt())
+                    }
+                }
+
+                if (capturedBitmap != null) {
+                    val labelCaptured = TextView(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        text = "Foto Scattata"
+                        gravity = Gravity.CENTER
+                        textSize = 12f
+                        setTextColor(Color.parseColor("#AAAAAA"))
+                    }
+                    labelsLayout.addView(labelCaptured)
+                }
+
+                val labelDb = TextView(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, if (capturedBitmap != null) 1f else 2f)
+                    text = "Database Rebrickable"
+                    gravity = Gravity.CENTER
+                    textSize = 12f
+                    setTextColor(Color.parseColor("#AAAAAA"))
+                }
+                labelsLayout.addView(labelDb)
+                dialogLayout.addView(labelsLayout)
+
+                val detailsTextView = TextView(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        setMargins(0, (8 * density).toInt(), 0, 0)
+                    }
+                    text = resultMessage
+                    textSize = 15f
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.START
+                    setLineSpacing(4f, 1.2f)
+                }
+                dialogLayout.addView(detailsTextView)
+
+                val scrollView = ScrollView(this).apply {
+                    addView(dialogLayout)
+                }
+
+                AlertDialog.Builder(this)
+                    .setTitle("Riconoscimento Lego")
+                    .setView(scrollView)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }
+    }
+
     private fun captureRemoteImage() {
         val masterPeer = synchronized(connectedPeers) { connectedPeers.values.find { it.role == "MASTER" } }
         if (masterPeer == null) {
@@ -1287,6 +1665,18 @@ class MainActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    private fun scaleBitmapMaxDimension(bmp: Bitmap, maxDim: Int): Bitmap {
+        val w = bmp.width
+        val h = bmp.height
+        if (w <= maxDim && h <= maxDim) return bmp
+        val scale = maxDim.toFloat() / Math.max(w, h)
+        val newW = (w * scale).toInt()
+        val newH = (h * scale).toInt()
+        val scaled = Bitmap.createScaledBitmap(bmp, newW, newH, true)
+        if (scaled !== bmp) bmp.recycle()
+        return scaled
+    }
+
     private fun takeHighResPhoto(requesterPeer: PeerConnection?) {
         val capture = activeImageCapture ?: return
         capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
@@ -1297,24 +1687,35 @@ class MainActivity : AppCompatActivity() {
                     val matrix = Matrix()
                     matrix.postRotate(rotation.toFloat())
                     val rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                    val scaledBitmap = when (currentResolutionLevel) {
+                        0 -> scaleBitmapMaxDimension(rotatedBitmap, 1280)
+                        1 -> scaleBitmapMaxDimension(rotatedBitmap, 1920)
+                        else -> rotatedBitmap
+                    }
                     val stream = ByteArrayOutputStream()
-                    rotatedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+                    scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
                     val photoBytes = stream.toByteArray()
 
                     // Salva la foto locale sul Master e mostrala (senza riciclarla perché usata da lastCapturedPhoto / remoteImageView)
-                    saveImage(rotatedBitmap)
-                    lastCapturedPhoto = rotatedBitmap
+                    saveImage(scaledBitmap)
+                    lastCapturedPhoto = scaledBitmap
 
                     runOnUiThread {
-                        remoteImageView.setImageBitmap(rotatedBitmap)
+                        remoteImageView.setImageBitmap(scaledBitmap)
                         remoteImageView.visibility = View.VISIBLE
                         cameraContainer.visibility = View.VISIBLE
                         localPreviewView.visibility = View.GONE
                         bottomActionsBar.visibility = View.VISIBLE
                         scanButton.visibility = View.VISIBLE
                         editPhotoButton.visibility = View.VISIBLE
+                        recognizeLegoButton.visibility = View.VISIBLE
                         loadPhotoButton.visibility = View.VISIBLE
                         Toast.makeText(this@MainActivity, "Foto scattata e mostrata con successo!", Toast.LENGTH_SHORT).show()
+
+                        if (isPendingLegoRecognition) {
+                            isPendingLegoRecognition = false
+                            recognizeLegoPart()
+                        }
                     }
 
                     // Invia la foto ad alta risoluzione allo slave richiedente (o a tutti gli slave)
@@ -1464,7 +1865,13 @@ class MainActivity : AppCompatActivity() {
                                 remoteImageView.visibility = View.VISIBLE
                                 cameraContainer.visibility = View.VISIBLE
                                 editPhotoButton.visibility = View.VISIBLE
+                                recognizeLegoButton.visibility = View.VISIBLE
                                 Toast.makeText(this@MainActivity, "Foto scattata e ricevuta dall'altro smartphone!", Toast.LENGTH_SHORT).show()
+
+                                if (isPendingLegoRecognition) {
+                                    isPendingLegoRecognition = false
+                                    recognizeLegoPart()
+                                }
                             }
                         }
                     }
@@ -1535,6 +1942,58 @@ class MainActivity : AppCompatActivity() {
             peer.role = "SLAVE"
             runOnUiThread { updateConnectionStatusUI() }
 
+        } else if (message.startsWith("CMD_SET_RESOLUTION:")) {
+            if (isMaster) {
+                val level = message.substringAfter("CMD_SET_RESOLUTION:").toIntOrNull() ?: 1
+                currentResolutionLevel = level
+            }
+
+        } else if (message == "CMD_RECOGNISE_LEGO") {
+            if (isMaster) {
+                val capture = activeImageCapture
+                if (capture != null) {
+                    capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+                        override fun onCaptureSuccess(image: ImageProxy) {
+                            try {
+                                val rawBmp = image.toBitmap()
+                                val rotation = image.imageInfo.rotationDegrees
+                                val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+                                val rotatedBmp = Bitmap.createBitmap(rawBmp, 0, 0, rawBmp.width, rawBmp.height, matrix, true)
+                                val scaledBmp = when (currentResolutionLevel) {
+                                    0 -> scaleBitmapMaxDimension(rotatedBmp, 1280)
+                                    1 -> scaleBitmapMaxDimension(rotatedBmp, 1920)
+                                    else -> rotatedBmp
+                                }
+                                performLegoRecognitionForPeer(peer, scaledBmp)
+                                image.close()
+                                rawBmp.recycle()
+                                if (rotatedBmp !== rawBmp) rotatedBmp.recycle()
+                            } catch (e: Exception) {
+                                Log.e("RemoteCamera", "Errore scatto per peer: ${e.message}")
+                            }
+                        }
+                        override fun onError(exception: ImageCaptureException) {}
+                    })
+                }
+            }
+
+        } else if (message.startsWith("CMD_LEGO_RESULT::")) {
+            val parts = message.split("::")
+            val partNum = parts.getOrNull(1) ?: ""
+            val partName = parts.getOrNull(2) ?: ""
+            val category = parts.getOrNull(3) ?: ""
+            val catId = parts.getOrNull(4) ?: ""
+            val year = parts.getOrNull(5) ?: ""
+            val confidence = parts.getOrNull(6) ?: "0"
+            val imgUrl = parts.getOrNull(7) ?: ""
+
+            showLegoResultDialog(null, partNum, partName, category, catId, year, confidence, imgUrl)
+
+        } else if (message.startsWith("CMD_LEGO_ERROR::")) {
+            val errorMsg = message.substringAfter("CMD_LEGO_ERROR::")
+            runOnUiThread {
+                Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+            }
         } else if (message == "CMD_START_STREAM") {
             if (isMaster) {
                 isStreamingRequested = true

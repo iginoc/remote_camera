@@ -46,6 +46,7 @@ import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.Preview
 import androidx.camera.core.ExperimentalLensFacing
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
@@ -609,10 +610,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateCameraBoxUI() {
         if (isMaster) {
-            cameraContainer.visibility = View.GONE
-            bottomActionsBar.visibility = View.GONE
-            focusControlLayout.visibility = View.GONE
-            captureButton.visibility = View.GONE
+            cameraContainer.visibility = View.VISIBLE
+            localPreviewView.visibility = View.VISIBLE
+            remoteImageView.visibility = View.GONE
+            bottomActionsBar.visibility = View.VISIBLE
+            captureButton.visibility = View.VISIBLE
+            recognizeLegoButton.visibility = View.VISIBLE
+            loadPhotoButton.visibility = View.VISIBLE
+            focusControlLayout.visibility = View.VISIBLE
             return
         }
 
@@ -1703,6 +1708,10 @@ class MainActivity : AppCompatActivity() {
             try {
                 cameraProvider = cameraProviderFuture.get()
 
+                val preview = Preview.Builder().build().also {
+                    it.setSurfaceProvider(localPreviewView.surfaceProvider)
+                }
+
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
@@ -1754,11 +1763,13 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 cameraProvider?.unbindAll()
-                camera = cameraProvider?.bindToLifecycle(this, currentCameraSelector, imageAnalysis, imageCapture)
+                camera = cameraProvider?.bindToLifecycle(this, currentCameraSelector, preview, imageAnalysis, imageCapture)
                 enableAutofocus(true)
 
                 runOnUiThread {
                     statusTextView.text = "Fotocamera attiva (Master in streaming agli Slave)"
+                    localPreviewView.visibility = View.VISIBLE
+                    remoteImageView.visibility = View.GONE
                 }
             } catch (e: Exception) {
                 Log.e("RemoteCamera", "Errore avvio fotocamera Master", e)

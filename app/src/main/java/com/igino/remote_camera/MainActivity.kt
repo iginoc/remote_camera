@@ -432,18 +432,12 @@ class MainActivity : AppCompatActivity() {
             }
 
             recognizeLegoButton.setOnClickListener {
-                if (lastCapturedPhoto != null) {
-                    recognizeLegoPart()
+                if (isMaster) {
+                    takePhotoAndRecognize(null)
+                    Toast.makeText(this, "Scatto e riconoscimento in corso...", Toast.LENGTH_SHORT).show()
                 } else {
-                    if (isMaster) {
-                        isPendingLegoRecognition = true
-                        takeHighResPhoto(null)
-                        Toast.makeText(this, "Scatto e riconoscimento in corso...", Toast.LENGTH_SHORT).show()
-                    } else {
-                        isPendingLegoRecognition = true
-                        sendControlMessageToMaster("CMD_TAKE_PHOTO")
-                        Toast.makeText(this, "Richiesta scatto al Master per il riconoscimento...", Toast.LENGTH_SHORT).show()
-                    }
+                    sendControlMessageToMaster("CMD_RECOGNISE_LEGO")
+                    Toast.makeText(this, "Richiesta riconoscimento al Master...", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -542,12 +536,15 @@ class MainActivity : AppCompatActivity() {
             roleLabel.text = "Ruolo: MASTER (Fotocamera)"
             becomeMasterButton.visibility = View.GONE
 
-            // Master non ha il riquadro di visione della fotocamera remoto e non ha i pulsanti in basso
-            cameraContainer.visibility = View.GONE
-            bottomActionsBar.visibility = View.GONE
-            focusControlLayout.visibility = View.GONE
+            cameraContainer.visibility = View.VISIBLE
             remoteImageView.visibility = View.GONE
-            localPreviewView.visibility = View.GONE
+            localPreviewView.visibility = View.VISIBLE
+            bottomActionsBar.visibility = View.VISIBLE
+            captureButton.visibility = View.VISIBLE
+            editPhotoButton.visibility = View.GONE
+            recognizeLegoButton.visibility = View.VISIBLE
+            loadPhotoButton.visibility = View.GONE
+            focusControlLayout.visibility = View.VISIBLE
 
             switchCameraButton.setColorFilter(Color.parseColor("#4CAF50"))
         } else {
@@ -560,7 +557,6 @@ class MainActivity : AppCompatActivity() {
             loadPhotoButton.visibility = View.VISIBLE
             editPhotoButton.visibility = if (lastCapturedPhoto != null) View.VISIBLE else View.GONE
             recognizeLegoButton.visibility = View.VISIBLE
-            recognizeLegoButton.visibility = if (lastCapturedPhoto != null) View.VISIBLE else View.GONE
 
             updateCameraBoxUI()
         }
@@ -1154,6 +1150,40 @@ class MainActivity : AppCompatActivity() {
             fullScreenDrawingContainer.visibility = View.GONE
             slavePaletteContainer.visibility = View.GONE
         }
+    }
+
+    private fun takePhotoAndRecognize(requesterPeer: PeerConnection?) {
+        val capture = activeImageCapture ?: return
+        capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                try {
+                    val rawBmp = image.toBitmap()
+                    val rotation = image.imageInfo.rotationDegrees
+                    val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+                    val rotatedBmp = Bitmap.createBitmap(rawBmp, 0, 0, rawBmp.width, rawBmp.height, matrix, true)
+                    val scaledBmp = when (currentResolutionLevel) {
+                        0 -> scaleBitmapMaxDimension(rotatedBmp, 1280)
+                        1 -> scaleBitmapMaxDimension(rotatedBmp, 1920)
+                        else -> rotatedBmp
+                    }
+                    performLegoRecognitionForPeer(requesterPeer, scaledBmp)
+                    image.close()
+                    rawBmp.recycle()
+                    if (rotatedBmp !== rawBmp) rotatedBmp.recycle()
+                } catch (e: Exception) {
+                    Log.e("RemoteCamera", "Errore scatto per riconoscimento: ${e.message}")
+                    if (requesterPeer != null) {
+                        sendDataToPeer(requesterPeer, 1, "CMD_LEGO_ERROR::Errore scatto fotocamera Master".toByteArray())
+                    }
+                }
+            }
+            override fun onError(exception: ImageCaptureException) {
+                Log.e("RemoteCamera", "Scatto fallito: ${exception.message}")
+                if (requesterPeer != null) {
+                    sendDataToPeer(requesterPeer, 1, "CMD_LEGO_ERROR::Scatto fotocamera fallito".toByteArray())
+                }
+            }
+        })
     }
 
     private fun recognizeLegoPart() {

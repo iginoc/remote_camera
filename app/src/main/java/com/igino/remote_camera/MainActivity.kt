@@ -20,10 +20,12 @@ import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.text.InputType
 import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -90,6 +92,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadPhotoButton: ImageButton
     private lateinit var captureButton: ImageButton
     private lateinit var switchCameraButton: ImageButton
+    private lateinit var settingsButton: ImageButton
     private lateinit var closeButton: ImageButton
     private lateinit var cameraContainer: FrameLayout
     private lateinit var remoteImageView: ImageView
@@ -190,6 +193,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private val PREF_IS_MASTER = "is_master"
     private val PREF_KNOWN_IPS = "known_peer_ips"
+    private val PREF_REBRICKABLE_API_KEY = "rebrickable_api_key"
 
     private var lastReceivedBitmap: Bitmap? = null
     private var lastCapturedPhoto: Bitmap? = null
@@ -281,6 +285,7 @@ class MainActivity : AppCompatActivity() {
             loadPhotoButton = findViewById(R.id.loadPhotoButton)
             captureButton = findViewById(R.id.captureButton)
             switchCameraButton = findViewById(R.id.switchCameraButton)
+            settingsButton = findViewById(R.id.settingsButton)
             closeButton = findViewById(R.id.closeButton)
             cameraContainer = findViewById(R.id.cameraContainer)
             remoteImageView = findViewById(R.id.remoteImageView)
@@ -455,6 +460,10 @@ class MainActivity : AppCompatActivity() {
 
             scanButton.setOnClickListener {
                 startManualScan()
+            }
+
+            settingsButton.setOnClickListener {
+                showSettingsDialog()
             }
 
             recognizeLegoButton.setOnClickListener {
@@ -1181,6 +1190,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showSettingsDialog() {
+        val input = EditText(this).apply {
+            hint = "Inserisci Rebrickable API Key"
+            setText(prefs.getString(PREF_REBRICKABLE_API_KEY, "") ?: "")
+            setPadding(48, 32, 48, 32)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Impostazioni - Rebrickable API Key")
+            .setMessage("Inserisci la tua chiave API di Rebrickable per abilitare il riconoscimento dei mattoncini Lego:")
+            .setView(input)
+            .setPositiveButton("Salva") { _, _ ->
+                val apiKey = input.text.toString().trim()
+                prefs.edit().putString(PREF_REBRICKABLE_API_KEY, apiKey).apply()
+                Toast.makeText(this, "API Key salvata con successo", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Annulla", null)
+            .show()
+    }
+
     private fun stopDrawingMode() {
         runOnUiThread {
             fullScreenDrawingContainer.visibility = View.GONE
@@ -1369,11 +1399,14 @@ class MainActivity : AppCompatActivity() {
                 var rebrickableImgUrl = ""
 
                 if (partNum.isNotEmpty()) {
+                    val apiKey = prefs.getString(PREF_REBRICKABLE_API_KEY, "") ?: ""
                     try {
                         val rebUrl = URL("https://rebrickable.com/api/v3/lego/parts/$partNum/")
                         val rebConn = (rebUrl.openConnection() as HttpURLConnection).apply {
                             requestMethod = "GET"
-                            setRequestProperty("Authorization", "key b63b7096a3cdea9e37191e848c99a9ad")
+                            if (apiKey.isNotEmpty()) {
+                                setRequestProperty("Authorization", "key $apiKey")
+                            }
                             setRequestProperty("Accept", "application/json")
                             connectTimeout = 10000
                             readTimeout = 10000
@@ -1392,7 +1425,9 @@ class MainActivity : AppCompatActivity() {
                                     val catUrl = URL("https://rebrickable.com/api/v3/lego/part_categories/$rebrickableCatId/")
                                     val catConn = (catUrl.openConnection() as HttpURLConnection).apply {
                                         requestMethod = "GET"
-                                        setRequestProperty("Authorization", "key b63b7096a3cdea9e37191e848c99a9ad")
+                                        if (apiKey.isNotEmpty()) {
+                                            setRequestProperty("Authorization", "key $apiKey")
+                                        }
                                         setRequestProperty("Accept", "application/json")
                                         connectTimeout = 5000
                                         readTimeout = 5000

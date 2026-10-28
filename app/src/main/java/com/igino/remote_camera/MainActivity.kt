@@ -53,6 +53,9 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import org.eclipse.paho.client.mqttv3.MqttClient
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions
+import org.eclipse.paho.client.mqttv3.MqttMessage
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
@@ -195,6 +198,9 @@ class MainActivity : AppCompatActivity() {
     private val PREF_IS_MASTER = "is_master"
     private val PREF_KNOWN_IPS = "known_peer_ips"
     private val PREF_REBRICKABLE_API_KEY = "rebrickable_api_key"
+    private val PREF_MQTT_SERVER = "mqtt_server"
+    private val PREF_MQTT_USER = "mqtt_user"
+    private val PREF_MQTT_PASSWORD = "mqtt_password"
 
     private var lastReceivedBitmap: Bitmap? = null
     private var lastCapturedPhoto: Bitmap? = null
@@ -1171,23 +1177,117 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showSettingsDialog() {
-        val input = EditText(this).apply {
-            hint = "Inserisci Rebrickable API Key"
-            setText(prefs.getString(PREF_REBRICKABLE_API_KEY, "") ?: "")
+        val context = this
+        val scrollView = ScrollView(context).apply {
             setPadding(48, 32, 48, 32)
+        }
+        val layout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val apiKeyInput = EditText(context).apply {
+            hint = "Rebrickable API Key"
+            setText(prefs.getString(PREF_REBRICKABLE_API_KEY, "") ?: "")
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
         }
 
-        AlertDialog.Builder(this)
-            .setTitle("Impostazioni - Rebrickable API Key")
-            .setMessage("Inserisci la tua chiave API di Rebrickable per abilitare il riconoscimento dei mattoncini Lego:")
-            .setView(input)
+        val mqttServerInput = EditText(context).apply {
+            hint = "es. tcp://broker.hivemq.com:1883"
+            setText(prefs.getString(PREF_MQTT_SERVER, "") ?: "")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+
+        val mqttUserInput = EditText(context).apply {
+            hint = "Username MQTT"
+            setText(prefs.getString(PREF_MQTT_USER, "") ?: "")
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+
+        val mqttPasswordInput = EditText(context).apply {
+            hint = "Password MQTT"
+            setText(prefs.getString(PREF_MQTT_PASSWORD, "") ?: "")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+
+        layout.addView(TextView(context).apply { text = "Rebrickable API Key:"; setPadding(0, 8, 0, 4); setTextColor(Color.DKGRAY) })
+        layout.addView(apiKeyInput)
+        layout.addView(TextView(context).apply { text = "Indirizzo Server MQTT (Broker URL):"; setPadding(0, 24, 0, 4); setTextColor(Color.DKGRAY) })
+        layout.addView(mqttServerInput)
+        layout.addView(TextView(context).apply { text = "Username MQTT:"; setPadding(0, 24, 0, 4); setTextColor(Color.DKGRAY) })
+        layout.addView(mqttUserInput)
+        layout.addView(TextView(context).apply { text = "Password MQTT:"; setPadding(0, 24, 0, 4); setTextColor(Color.DKGRAY) })
+        layout.addView(mqttPasswordInput)
+
+        scrollView.addView(layout)
+
+        AlertDialog.Builder(context)
+            .setTitle("Impostazioni")
+            .setView(scrollView)
             .setPositiveButton("Salva") { _, _ ->
-                val apiKey = input.text.toString().trim()
-                prefs.edit().putString(PREF_REBRICKABLE_API_KEY, apiKey).apply()
+                val apiKey = apiKeyInput.text.toString().trim()
+                val mqttServer = mqttServerInput.text.toString().trim()
+                val mqttUser = mqttUserInput.text.toString().trim()
+                val mqttPassword = mqttPasswordInput.text.toString().trim()
+
+                prefs.edit()
+                    .putString(PREF_REBRICKABLE_API_KEY, apiKey)
+                    .putString(PREF_MQTT_SERVER, mqttServer)
+                    .putString(PREF_MQTT_USER, mqttUser)
+                    .putString(PREF_MQTT_PASSWORD, mqttPassword)
+                    .apply()
             }
             .setNegativeButton("Annulla", null)
             .show()
+    }
+
+    private fun publishLegoToMqtt(partNum: String, partName: String, category: String, catId: String, year: String, confidence: String, imgUrl: String) {
+        val serverUri = prefs.getString(PREF_MQTT_SERVER, "") ?: ""
+        if (serverUri.isEmpty()) return
+
+        val username = prefs.getString(PREF_MQTT_USER, "") ?: ""
+        val password = prefs.getString(PREF_MQTT_PASSWORD, "") ?: ""
+
+        thread {
+            try {
+                val clientId = "RemoteCamera_" + System.currentTimeMillis()
+                val mqttClient = MqttClient(serverUri, clientId, null)
+                val options = MqttConnectOptions().apply {
+                    isCleanSession = true
+                    if (username.isNotEmpty()) {
+                        userName = username
+                    }
+                    if (password.isNotEmpty()) {
+                        setPassword(password.toCharArray())
+                    }
+                    connectionTimeout = 5
+                }
+
+                mqttClient.connect(options)
+
+                val json = JSONObject().apply {
+                    put("part_num", partNum)
+                    put("part_name", partName)
+                    put("category", category)
+                    put("category_id", catId)
+                    put("year", year)
+                    put("confidence", confidence)
+                    put("image_url", imgUrl)
+                    put("timestamp", System.currentTimeMillis())
+                }
+
+                val topic = "remote_camera/lego_found"
+                val message = MqttMessage(json.toString().toByteArray(Charsets.UTF_8)).apply {
+                    qos = 1
+                }
+
+                mqttClient.publish(topic, message)
+                mqttClient.disconnect()
+                mqttClient.close()
+                Log.d("RemoteCamera", "Dati Lego pubblicati con successo su MQTT: $serverUri -> $topic")
+            } catch (e: Exception) {
+                Log.e("RemoteCamera", "Errore pubblicazione MQTT: ${e.message}", e)
+            }
+        }
     }
 
     private fun stopDrawingMode() {
@@ -1422,6 +1522,8 @@ class MainActivity : AppCompatActivity() {
                 val safeCat = rebrickableCategory.replace("::", "_")
                 val safeCatId = rebrickableCatId.replace("::", "_")
                 val safeYear = rebrickableYear.replace("::", "_")
+
+                publishLegoToMqtt(partNum, rebrickablePartName, rebrickableCategory, rebrickableCatId, rebrickableYear, confidencePercent.toString(), rebrickableImgUrl)
 
                 if (peer != null) {
                     val resultMsg = "CMD_LEGO_RESULT::$partNum::$safeName::$safeCat::$safeCatId::$safeYear::$confidencePercent::$rebrickableImgUrl"
